@@ -1,0 +1,2 @@
+# Pins rustfmt defaults so a global config cannot change them.
+style_edition = "2024"

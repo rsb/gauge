@@ -1,0 +1,17 @@
+id = "ERR-20"
+statement = "Read every Result. Check it or return it."
+why = ""
+check_class = "mechanical"
+default_level = "error"
+
+[scope]
+tree = "rsb/web"
+paths = ["packages/**"]
+
+[lifecycle]
+state = "enforced"
+
+[[checks]]
+kind = "eslint"
+ref = "gm/must-use-result"
+precision = 1.5

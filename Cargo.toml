@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+registry = { path = "crates/registry" }
+clap = { version = "4", features = ["derive"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "1"
+
+# The layer table read by `cargo xtask layers`. A crate depends only on crates
+# in strictly lower layers. See engineering/layers.md.
+[workspace.metadata.layers]
+registry = 0
+easel-cli = "exempt"
+xtask = "exempt"
+
+# Never crash and errors, engineering/never-crash.md and engineering/errors.md.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+let_underscore_must_use = "deny"

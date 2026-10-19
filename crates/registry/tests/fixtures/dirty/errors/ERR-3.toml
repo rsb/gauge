@@ -1,0 +1,13 @@
+id = "ERR-3"
+statement = "Read every Result. Check it or return it."
+why = "A dropped Result is a failure no one sees."
+check_class = "mechanical"
+default_level = "error"
+
+[scope]
+tree = "rsb/web"
+paths = ["packages/**"]
+
+[lifecycle]
+state = "retired"
+since = "19-10-2026"
