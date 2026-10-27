@@ -30,7 +30,7 @@ enum Command {
 enum RegistryCommand {
     /// Load every rule under a directory and report what is wrong with it.
     Lint {
-        /// The registry root, such as `../rules/rules`.
+        /// The registry root, such as `../agent-registry/rules`.
         root: PathBuf,
     },
     /// Print the JSON Schema for one rule file.

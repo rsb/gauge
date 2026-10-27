@@ -28,7 +28,7 @@ SARIF findings), `score` (scorecards and history), `mint` (profiles,
 plan and apply), `lab` (trial evaluation, labels, pattern mining), and
 `easel`.
 
-The rules themselves live in `rsb/rules`, which Easel reads. Easel holds
+The rules themselves live in `rsb/agent-registry`, which Easel reads. Easel holds
 no rule content of its own beyond test fixtures.
 
 ## Run
@@ -41,8 +41,9 @@ cargo run -p easel-cli -- registry schema        # print the JSON Schema for a r
 Status: phase 1, the registry schema and parser. The design and the
 phased roadmap are in the "Agent Workflow Development" project.
 
-Related repositories: `../rules` holds the standards shared by the rsb
-apps and the rule registry Easel reads, `../agent-driver` holds the
-GitHub App key and does GitHub actions for agents, `../agent-box` is the
-container agents run in away from the desk, `../skills` holds how work
-is done.
+Related repositories, siblings under `~/code/software/rsb/factory/`:
+`../agent-registry` holds the standards shared by the rsb apps and the
+rule registry Easel reads, `../agent-driver` holds the GitHub App key
+(being folded into this repository, then archived), `../agent-box` is
+the container agents run in, `../agent-host` holds the at-desk sandbox
+configuration, and `../rsb-skills` holds how work is done.
