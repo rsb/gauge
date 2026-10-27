@@ -9,6 +9,8 @@ records:
   - decisions/2026-10-26-user-flows-and-boundaries.md
   - decisions/2026-10-26-review-escapes-and-debt.md
   - decisions/2026-10-26-registry-entities-releases-blueprints.md
+  - decisions/2026-10-27-profile-components.md
+  - decisions/2026-10-27-effects-and-unfinished-work.md
 target_repo: ref-rsb-serverless-stack (role `reference`)
 ---
 
@@ -119,7 +121,7 @@ ticket that names it.
 | `implement` reads the ticket file and `allowed_effects` from the brief, writes the outbox and the manifest last | `rsb-skills`, step 5 | 06, 07 |
 | `repos.toml` with roles `factory`, `project`, `record`, `reference` | `agent-registry`, owner PR | 03 |
 | agent-box can be launched non-interactively with a workspace, a run directory and an agent name, and exits | `agent-box` (verify; extend if not) | 06 |
-| The reference repo at align state: walking skeleton, `.rsb/governance.lock` with root chain and mounts per `decisions/2026-10-27-profile-components.md` (present and hashed at M1, validated only at M3), `AGENTS.md` render with one region per mount, Actions `scorecard` as the one required check, a `specs/` folder with at least one one-node spec applied as issues | owner, pre-M1 | 05, 11 |
+| The reference repo at align state: walking skeleton, `.rsb/governance.lock` with root chain and mounts per `decisions/2026-10-27-profile-components.md` (present and hashed at M1, validated only at M3), `AGENTS.md` render with one region per mount, Actions `scorecard` as the one required check, a `specs/` folder with at least two one-node specs applied as issues | owner, pre-M1 | 05, 11 |
 
 ## The M1 situation table (proposal)
 

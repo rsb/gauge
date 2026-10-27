@@ -58,6 +58,13 @@ survives being killed anywhere.
   probe mark so Learn excludes it (its form is open in the effects
   record).
 
+## Out of scope
+
+Two machines, leases and takeover (M5). The Codex adapter (M4). The
+App-posted `scorecard` and the ruleset cutover (M2). Phone commands
+(M5). Tuning backoff and the attempt budget beyond their provisional
+values (validated on the reference app after M1).
+
 ## Criteria
 
 - [ ] Both specs reach a merged PR with no owner command between the
