@@ -8,7 +8,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-registry = { path = "crates/registry" }
+rsb-gauge-schema = { path = "crates/rsb-gauge-schema" }
 clap = { version = "4", features = ["derive"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -19,8 +19,8 @@ toml = "1"
 # The layer table read by `cargo xtask layers`. A crate depends only on crates
 # in strictly lower layers. See engineering/layers.md.
 [workspace.metadata.layers]
-registry = 0
-easel-cli = "exempt"
+rsb-gauge-schema = 0
+rsb-gauge-cli = "exempt"
 xtask = "exempt"
 
 # Never crash and errors, engineering/never-crash.md and engineering/errors.md.

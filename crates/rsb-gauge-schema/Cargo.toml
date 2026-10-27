@@ -1,5 +1,5 @@
 [package]
-name = "registry"
+name = "rsb-gauge-schema"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

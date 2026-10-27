@@ -105,16 +105,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "easel-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "registry",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -205,7 +195,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "registry"
+name = "rsb-gauge-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "rsb-gauge-schema",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "rsb-gauge-schema"
 version = "0.1.0"
 dependencies = [
  "schemars",
