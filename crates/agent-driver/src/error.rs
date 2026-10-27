@@ -1,0 +1,47 @@
+use std::path::PathBuf;
+
+/// Every failure the program reports. None carries a token or a key.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("HOME is not set, so the config directory is unknown")]
+    NoHome,
+    #[error("cannot read {path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{path} is readable by others (mode {mode:o}); run chmod 600")]
+    KeyMode { path: PathBuf, mode: u32 },
+    #[error("config {path}: {source}")]
+    Config {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("repo {0:?} is not a valid owner/name")]
+    RepoName(String),
+    #[error("repo {0} is not listed in config")]
+    RepoNotConfigured(String),
+    #[error("request id {0:?} is not 32 lowercase hex digits")]
+    RequestId(String),
+    /// Our fault: what would have been a panic.
+    #[error("internal error: {0}")]
+    Failed(String),
+    #[error("the clock is before 1970")]
+    Clock,
+    #[error("signing the App JWT: {0}")]
+    Sign(#[from] jsonwebtoken::errors::Error),
+    #[error("the App is not installed on {0}")]
+    NotInstalled(String),
+    #[error("GitHub {what}: {source}")]
+    Http {
+        what: &'static str,
+        source: ureq::Error,
+    },
+    #[error("GitHub returned status {status} for {what}")]
+    Status { what: &'static str, status: u16 },
+}
