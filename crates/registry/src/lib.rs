@@ -3,7 +3,7 @@
 //! The types in [`rule`] are the schema. `toml` reads a file into them,
 //! `schemars` derives the JSON Schema from them for the editor and CI, and
 //! an unknown field or value is a parse error. The registry content lives in
-//! `rsb/rules`; this crate only reads it. The agent never reads a rule file,
+//! `rsb/agent-registry`; this crate only reads it. The agent never reads a rule file,
 //! only the projections `render` makes from it.
 
 mod error;

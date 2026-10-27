@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Read `README.md` first. Sessions run from this repository. Standards shared by
-the rsb apps live in `../rules`; read its `README.md`. The rules Easel reads
+the rsb apps live in `../agent-registry`; read its `README.md`. The rules Easel reads
 live there too; this repository holds no rule content beyond test fixtures.
 
 Commits follow Conventional Commits. Never add `Co-Authored-By` or any other AI
