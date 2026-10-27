@@ -1,5 +1,6 @@
-//! The headless binary. Every capability Easel has is a command here before
-//! it has a window; the desktop app calls the same library and adds nothing.
+//! The headless binary, `gauge`. Every capability Gauge has is a command here
+//! before it has a window; the desktop app calls the same library and adds
+//! nothing.
 
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
@@ -7,11 +8,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use registry::{Registry, RegistryError};
+use rsb_gauge_schema::{Registry, RegistryError};
 
 /// Control center for agent-driven development.
 #[derive(Parser)]
-#[command(name = "easel-cli", version)]
+#[command(name = "gauge", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -104,7 +105,7 @@ fn run(command: Command) -> Result<Outcome, Error> {
 
 fn lint(root: &std::path::Path) -> Result<Outcome, Error> {
     let registry = Registry::load(root)?;
-    let findings = registry::lint(&registry);
+    let findings = rsb_gauge_schema::lint(&registry);
     let mut lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
     lines.push(format!(
         "{} rules, {} findings",
@@ -118,7 +119,7 @@ fn lint(root: &std::path::Path) -> Result<Outcome, Error> {
 }
 
 fn schema() -> Result<Outcome, Error> {
-    let text = serde_json::to_string_pretty(&registry::schema())?;
+    let text = serde_json::to_string_pretty(&rsb_gauge_schema::schema())?;
     Ok(Outcome {
         lines: vec![text],
         passed: true,

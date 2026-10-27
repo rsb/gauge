@@ -58,6 +58,7 @@ mod tests {
     fn krate(name: &str, deps: &[&str]) -> Crate {
         Crate {
             name: name.into(),
+            id: name.into(),
             deps: deps.iter().map(|d| d.to_string()).collect(),
             dir: Default::default(),
         }

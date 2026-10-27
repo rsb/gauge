@@ -8,20 +8,50 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-registry = { path = "crates/registry" }
+rsb-gauge-schema = { path = "crates/rsb-gauge-schema" }
 clap = { version = "4", features = ["derive"] }
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+libc = "0.2"
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 toml = "1"
+ureq = { version = "3", features = ["json"] }
 
 # The layer table read by `cargo xtask layers`. A crate depends only on crates
 # in strictly lower layers. See engineering/layers.md.
 [workspace.metadata.layers]
-registry = 0
-easel-cli = "exempt"
+rsb-gauge-schema = 0
+rsb-gauge-cli = "exempt"
+agent-driver = "exempt"
 xtask = "exempt"
+
+# The custody table, also read by `cargo xtask layers`. Only `holder` depends
+# on these crates, and no crate depends on `holder`. `transitive` counts at any
+# depth; `direct` only where a crate lists it itself, for crates that every
+# async runtime and socket library links. See engineering/layers.md.
+[workspace.metadata.custody]
+holder = "agent-driver"
+transitive = [
+    # GitHub clients and the App JWT signer.
+    "jsonwebtoken",
+    "octocrab",
+    # HTTP clients.
+    "attohttpc",
+    "curl",
+    "hyper",
+    "isahc",
+    "reqwest",
+    "ureq",
+    # Process launchers.
+    "duct",
+    "subprocess",
+]
+# Process launchers through the C library.
+direct = ["libc", "nix"]
 
 # Never crash and errors, engineering/never-crash.md and engineering/errors.md.
 [workspace.lints.rust]

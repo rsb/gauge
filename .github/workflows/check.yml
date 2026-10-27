@@ -16,3 +16,6 @@ jobs:
       - run: cargo test --workspace --message-format short
       - run: cargo xtask layers
       - run: cargo xtask errors
+      - run: cargo xtask launch
+      - run: cargo run -p rsb-gauge-cli -- --version
+      - run: cargo run -p agent-driver -- --version

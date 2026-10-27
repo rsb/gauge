@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.metadata.layers]
+rsb-gauge-schema = 0
+rsb-gauge-reconcile = 1
+agent-driver = "exempt"
+
+[workspace.metadata.custody]
+holder = "agent-driver"
+transitive = ["ureq"]
+direct = ["libc"]

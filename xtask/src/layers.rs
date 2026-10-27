@@ -82,15 +82,16 @@ mod tests {
     fn krate(name: &str, deps: &[&str]) -> Crate {
         Crate {
             name: name.into(),
+            id: name.into(),
             deps: deps.iter().map(|d| d.to_string()).collect(),
             dir: Default::default(),
         }
     }
 
-    fn easel_table() -> Table {
+    fn gauge_table() -> Table {
         table(&json!({ "layers": {
             "registry": 0, "render": 1, "checks": 1, "score": 2, "lab": 3,
-            "easel": "exempt", "easel-cli": "exempt", "xtask": "exempt",
+            "insights": "exempt", "rsb-gauge-cli": "exempt", "xtask": "exempt",
         }}))
         .unwrap()
     }
@@ -102,10 +103,10 @@ mod tests {
             krate("render", &["registry"]),
             krate("score", &["registry", "checks", "serde"]),
             krate("lab", &["score"]),
-            krate("easel", &["lab", "registry"]),
+            krate("insights", &["lab", "registry"]),
             krate("xtask", &["serde_json"]),
         ];
-        assert_eq!(check(&easel_table(), &crates), Vec::<String>::new());
+        assert_eq!(check(&gauge_table(), &crates), Vec::<String>::new());
     }
 
     #[test]
@@ -115,7 +116,7 @@ mod tests {
             krate("score", &["render"]),
         ];
         assert_eq!(
-            check(&easel_table(), &crates),
+            check(&gauge_table(), &crates),
             ["render (layer 1) depends on score (layer 2): a crate depends only on lower layers"]
         );
     }
@@ -124,10 +125,10 @@ mod tests {
     fn a_dependency_within_one_layer_fails() {
         let crates = [krate("lab", &["score"]), krate("score", &["lab"])];
         assert_eq!(
-            check(&easel_table(), &crates),
+            check(&gauge_table(), &crates),
             ["score (layer 2) depends on lab (layer 3): a crate depends only on lower layers"]
         );
-        let mut same = easel_table();
+        let mut same = gauge_table();
         same.insert("lab".into(), Layer::At(2));
         assert_eq!(check(&same, &crates).len(), 2);
     }
@@ -135,7 +136,7 @@ mod tests {
     #[test]
     fn a_crate_missing_from_the_table_fails() {
         assert_eq!(
-            check(&easel_table(), &[krate("catalog", &[])]),
+            check(&gauge_table(), &[krate("catalog", &[])]),
             ["catalog: not in [workspace.metadata.layers]; give it a layer"]
         );
     }
@@ -144,7 +145,7 @@ mod tests {
     fn a_layered_crate_may_not_depend_on_an_exempt_one() {
         let crates = [krate("score", &["xtask"]), krate("xtask", &[])];
         assert_eq!(
-            check(&easel_table(), &crates),
+            check(&gauge_table(), &crates),
             [
                 "score (layer 2) depends on xtask (exempt): no layered crate depends on a binary or tooling"
             ]

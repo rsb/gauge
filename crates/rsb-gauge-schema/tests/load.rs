@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use registry::rule::{CheckClass, Runtime, State, Toolchain};
-use registry::{Problem, Registry, RegistryError, lint};
+use rsb_gauge_schema::rule::{CheckClass, Runtime, State, Toolchain};
+use rsb_gauge_schema::{Problem, Registry, RegistryError, lint};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -71,7 +71,7 @@ fn a_dirty_registry_reports_each_problem_with_its_file() {
 
 #[test]
 fn a_file_that_does_not_parse_stops_the_load_and_names_the_file() {
-    let dir = std::env::temp_dir().join(format!("easel-registry-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gauge-registry-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     std::fs::write(
         dir.join("BAD-1.toml"),
