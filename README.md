@@ -24,7 +24,7 @@ crate boundary: see `engineering/layers.md`.
 | `rsb-gauge-schema` | 0 | The rule types, the TOML loader, the JSON Schema, the registry linter. |
 | `rsb-gauge-cli` | exempt | The headless binary `gauge`. Every command the app will have exists here first. No key. |
 | `agent-driver` | exempt | The binary that holds the GitHub App key, mints narrowed tokens and talks to GitHub as the App. The only crate allowed a GitHub or HTTP client. |
-| `xtask` | exempt | `cargo xtask layers` (layers and custody) and `cargo xtask errors`. |
+| `xtask` | exempt | `cargo xtask layers` (layers and custody), `cargo xtask launch` (custody in source) and `cargo xtask errors`. |
 
 Planned, each joining the layer table when it is created:
 

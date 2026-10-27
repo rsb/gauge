@@ -26,8 +26,9 @@ pub struct Node {
 /// The resolved dependency graph, by package id.
 pub type Graph = BTreeMap<String, Node>;
 
-/// The workspace's crates, its resolved graph and its `[workspace.metadata]`.
+/// The workspace's root, crates, resolved graph and `[workspace.metadata]`.
 pub struct Workspace {
+    pub root: PathBuf,
     pub crates: Vec<Crate>,
     pub graph: Graph,
     pub metadata: Value,
@@ -109,6 +110,7 @@ pub fn load(manifest: Option<&Path>) -> Result<Workspace, String> {
         .collect();
     let metadata = json.get("metadata").cloned().unwrap_or_default();
     Ok(Workspace {
+        root: PathBuf::from(str_at(&json, "workspace_root")),
         crates,
         graph,
         metadata,

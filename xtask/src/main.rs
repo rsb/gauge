@@ -1,14 +1,16 @@
-//! Workspace checks: `cargo xtask layers`, `cargo xtask errors`.
+//! Workspace checks: `cargo xtask layers`, `cargo xtask errors`,
+//! `cargo xtask launch`.
 
 mod custody;
 mod errors;
+mod launch;
 mod layers;
 mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask <layers [--manifest-path <Cargo.toml>]|errors>";
+const USAGE: &str = "usage: cargo xtask <layers|launch [--manifest-path <Cargo.toml>]|errors>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -16,6 +18,8 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         ["layers"] => layers(None),
         ["layers", "--manifest-path", manifest] => layers(Some(&PathBuf::from(manifest))),
+        ["launch"] => launch(None),
+        ["launch", "--manifest-path", manifest] => launch(Some(&PathBuf::from(manifest))),
         ["errors"] => errors(),
         _ => Err(vec![USAGE.into()]),
     };
@@ -60,6 +64,36 @@ fn errors() -> Result<(), Vec<String>> {
                 .display()
                 .to_string();
             out.extend(errors::boxed_errors(&shown, &source));
+        }
+    }
+    failures(out)
+}
+
+/// The process-launch scan, against the workspace at `manifest` or the
+/// current one. The custody holder and `xtask` may start processes; tests
+/// may too, under `tests/` or `#[cfg(test)]`.
+fn launch(manifest: Option<&Path>) -> Result<(), Vec<String>> {
+    let ws = workspace::load(manifest).map_err(|e| vec![e])?;
+    let custody = custody::table(&ws.metadata).map_err(|e| vec![e])?;
+    let mut out = Vec::new();
+    for c in ws
+        .crates
+        .iter()
+        .filter(|c| c.name != custody.holder && c.name != "xtask")
+    {
+        let tests = c.dir.join("tests");
+        for file in rust_files(&c.dir).map_err(|e| vec![format!("{}: {e}", c.dir.display())])? {
+            if file.starts_with(&tests) {
+                continue;
+            }
+            let source = std::fs::read_to_string(&file)
+                .map_err(|e| vec![format!("{}: {e}", file.display())])?;
+            let shown = file
+                .strip_prefix(&ws.root)
+                .unwrap_or(&file)
+                .display()
+                .to_string();
+            out.extend(launch::launches(&shown, &source, &custody.holder));
         }
     }
     failures(out)
