@@ -107,14 +107,14 @@ Any domain type, store or tick code (03). New GitHub calls (05).
 - [ ] `cargo build`, `cargo test --workspace`, clippy, fmt and both
       xtasks pass in CI under the new names; the schema crate's existing
       tests pass unchanged in substance.
-- [ ] `xtask layers` fails on a fixture where `rsb-gauge-schema` (or
+- [x] `xtask layers` fails on a fixture where `rsb-gauge-schema` (or
       any future `rsb-gauge-*` crate) depends on a custody-table crate,
       directly or transitively, and on one where `rsb-gauge-cli` depends
       on `agent-driver`; it passes on the real workspace.
-- [ ] `gauge registry lint <dir>` and `gauge registry schema` behave as
+- [x] `gauge registry lint <dir>` and `gauge registry schema` behave as
       `easel-cli` did; `gauge --version` and `agent-driver --version`
       exit 0.
-- [ ] `agent-driver` contains none of `desk`, `serve`, the `gh` shim, or
+- [x] `agent-driver` contains none of `desk`, `serve`, the `gh` shim, or
       any code path that places a token in a child process's
       environment.
-- [ ] No file in the repo still names Easel except history.
+- [x] No file in the repo still names Easel except history.
