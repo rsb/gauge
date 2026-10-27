@@ -19,7 +19,10 @@ contracts:
         ticket path), presence and content hash of `.rsb/governance.lock`
         on the default branch. Requests from labels, keyed by
         (repo, issue, label event). Open loops whose repo passed both
-        eligibility tests.
+        eligibility tests. A clone operation on the same port: fetch
+        an eligible repo at a given sha with an installation token
+        scoped to that repo, into a path the caller names, with the
+        token never written to the clone's config or to disk.
 seams:
   - GitHub port fake with scripted issues and labels
   - kill harness: label seen, request inserted, tick killed, no duplicate request
@@ -51,6 +54,10 @@ host one.
   (**proposal**: refused, not parked, since no loop exists yet).
 - The label stays on the issue at M1 (**proposal**); the driver adds
   nothing to the issue in this ticket.
+- Clone for 06: the GitHub port fetches an eligible repo at a sha into a
+  caller-named path with a repo-scoped installation token passed per
+  command, never stored in `.git/config`; the fake port clones from a
+  local bare repository.
 
 ## Out of scope
 

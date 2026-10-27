@@ -18,8 +18,10 @@ contracts:
         on attempt 1) and `run/` with `brief.json` (v1) and an empty
         `outbox/`. The attempt runs as a transient unit named
         `gauge-run-<loop>-<attempt>` whose state and exit status the tick can
-        observe. An attempt record in the store: number, unit name,
-        agent, model, start time, runtime bound.
+        observe. `brief_issued` recorded in the store with the brief's
+        payload before the unit starts, keyed by (loop, attempt). An
+        attempt record in the store: number, unit name, agent, model,
+        start time, runtime bound.
     - to: S-0001/11
       shape: >
         `AgentAdapter` trait in `rsb-gauge-reconcile` (`AttemptSpec` in,

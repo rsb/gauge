@@ -86,6 +86,11 @@ written. This is a restructure of what exists, not a new workspace.
    factory profile exists (its rules then move to the registry; the
    xtasks stay as code).
 6. **No `insights` crate** yet (created when it has content).
+7. **Containment path:** done before this ticket (2026-10-27,
+   `chore/factory-layout-paths`): the agent-box deny path is
+   `~/code/software/rsb/factory/agent-box/**`, and sibling references
+   point at `../agent-registry` and `../rsb-skills`. Docs still say
+   Easel; renaming them is step 5.
 
 ## Out of scope
 
