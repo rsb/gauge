@@ -1,6 +1,7 @@
 //! The workspace as the checks see it, read from `cargo metadata`.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -9,19 +10,38 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub struct Crate {
     pub name: String,
+    pub id: String,
     pub deps: Vec<String>,
     pub dir: PathBuf,
 }
 
-/// The workspace's crates and its `[workspace.metadata]`.
+/// One resolved package: its name, and the ids of the packages it depends
+/// on, of every kind and for every target.
+#[derive(Debug, Clone, Default)]
+pub struct Node {
+    pub name: String,
+    pub deps: Vec<String>,
+}
+
+/// The resolved dependency graph, by package id.
+pub type Graph = BTreeMap<String, Node>;
+
+/// The workspace's crates, its resolved graph and its `[workspace.metadata]`.
 pub struct Workspace {
     pub crates: Vec<Crate>,
+    pub graph: Graph,
     pub metadata: Value,
 }
 
-pub fn load() -> Result<Workspace, String> {
-    let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args(["metadata", "--format-version", "1", "--no-deps"])
+/// Loads the workspace whose root manifest is `manifest`, or the one cargo
+/// finds from the current directory.
+pub fn load(manifest: Option<&Path>) -> Result<Workspace, String> {
+    let mut command = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    command.args(["metadata", "--format-version", "1"]);
+    if let Some(manifest) = manifest {
+        command.arg("--manifest-path").arg(manifest);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("cargo metadata: {e}"))?;
     if !output.status.success() {
@@ -32,13 +52,27 @@ pub fn load() -> Result<Workspace, String> {
     }
     let json: Value =
         serde_json::from_slice(&output.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
-    let crates = json
+    let members: Vec<&str> = json
+        .get("workspace_members")
+        .and_then(Value::as_array)
+        .ok_or("cargo metadata: no workspace members")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let packages = json
         .get("packages")
         .and_then(Value::as_array)
-        .ok_or("cargo metadata: no packages")?
+        .ok_or("cargo metadata: no packages")?;
+    let names: BTreeMap<&str, &str> = packages
         .iter()
+        .map(|p| (str_at(p, "id"), str_at(p, "name")))
+        .collect();
+    let crates = packages
+        .iter()
+        .filter(|p| members.contains(&str_at(p, "id")))
         .map(|p| Crate {
             name: str_at(p, "name").to_owned(),
+            id: str_at(p, "id").to_owned(),
             deps: p
                 .get("dependencies")
                 .and_then(Value::as_array)
@@ -52,8 +86,33 @@ pub fn load() -> Result<Workspace, String> {
                 .unwrap_or_default(),
         })
         .collect();
+    let graph = json
+        .get("resolve")
+        .and_then(|r| r.get("nodes"))
+        .and_then(Value::as_array)
+        .ok_or("cargo metadata: no resolved graph")?
+        .iter()
+        .map(|n| {
+            let id = str_at(n, "id");
+            let node = Node {
+                name: names.get(id).copied().unwrap_or_default().to_owned(),
+                deps: n
+                    .get("deps")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|d| str_at(d, "pkg").to_owned())
+                    .collect(),
+            };
+            (id.to_owned(), node)
+        })
+        .collect();
     let metadata = json.get("metadata").cloned().unwrap_or_default();
-    Ok(Workspace { crates, metadata })
+    Ok(Workspace {
+        crates,
+        graph,
+        metadata,
+    })
 }
 
 fn str_at<'a>(value: &'a Value, key: &str) -> &'a str {

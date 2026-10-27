@@ -1,1 +1,3 @@
 /target/
+# Written by `cargo metadata` when the layer tests read a fixture.
+/xtask/tests/fixtures/*/Cargo.lock

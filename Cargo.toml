@@ -29,6 +29,30 @@ rsb-gauge-cli = "exempt"
 agent-driver = "exempt"
 xtask = "exempt"
 
+# The custody table, also read by `cargo xtask layers`. Only `holder` depends
+# on these crates, and no crate depends on `holder`. `transitive` counts at any
+# depth; `direct` only where a crate lists it itself, for crates that every
+# async runtime and socket library links. See engineering/layers.md.
+[workspace.metadata.custody]
+holder = "agent-driver"
+transitive = [
+    # GitHub clients and the App JWT signer.
+    "jsonwebtoken",
+    "octocrab",
+    # HTTP clients.
+    "attohttpc",
+    "curl",
+    "hyper",
+    "isahc",
+    "reqwest",
+    "ureq",
+    # Process launchers.
+    "duct",
+    "subprocess",
+]
+# Process launchers through the C library.
+direct = ["libc", "nix"]
+
 # Never crash and errors, engineering/never-crash.md and engineering/errors.md.
 [workspace.lints.rust]
 unsafe_code = "forbid"

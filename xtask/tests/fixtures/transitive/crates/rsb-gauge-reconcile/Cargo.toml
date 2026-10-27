@@ -1,0 +1,9 @@
+[package]
+name = "rsb-gauge-reconcile"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rsb-gauge-schema = { path = "../rsb-gauge-schema" }
+toolkit = { path = "../../../stubs/toolkit" }

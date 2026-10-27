@@ -1,18 +1,23 @@
 //! Workspace checks: `cargo xtask layers`, `cargo xtask errors`.
 
+mod custody;
 mod errors;
 mod layers;
 mod workspace;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+const USAGE: &str = "usage: cargo xtask <layers [--manifest-path <Cargo.toml>]|errors>";
+
 fn main() -> ExitCode {
-    let task = std::env::args().nth(1);
-    let result = match task.as_deref() {
-        Some("layers") => layers(),
-        Some("errors") => errors(),
-        _ => Err(vec!["usage: cargo xtask <layers|errors>".into()]),
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let result = match args.as_slice() {
+        ["layers"] => layers(None),
+        ["layers", "--manifest-path", manifest] => layers(Some(&PathBuf::from(manifest))),
+        ["errors"] => errors(),
+        _ => Err(vec![USAGE.into()]),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -25,14 +30,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn layers() -> Result<(), Vec<String>> {
-    let ws = workspace::load().map_err(|e| vec![e])?;
+/// The layer rule and the custody rule, against the workspace at
+/// `manifest` or the current one.
+fn layers(manifest: Option<&Path>) -> Result<(), Vec<String>> {
+    let ws = workspace::load(manifest).map_err(|e| vec![e])?;
     let table = layers::table(&ws.metadata).map_err(|e| vec![e])?;
-    failures(layers::check(&table, &ws.crates))
+    let custody = custody::table(&ws.metadata).map_err(|e| vec![e])?;
+    let mut out = layers::check(&table, &ws.crates);
+    out.extend(custody::check(&custody, &ws.crates, &ws.graph));
+    failures(out)
 }
 
 fn errors() -> Result<(), Vec<String>> {
-    let ws = workspace::load().map_err(|e| vec![e])?;
+    let ws = workspace::load(None).map_err(|e| vec![e])?;
     let root = std::env::current_dir().map_err(|e| vec![format!("current dir: {e}")])?;
     let mut out = errors::banned_crates(&ws.crates);
     for c in &ws.crates {
