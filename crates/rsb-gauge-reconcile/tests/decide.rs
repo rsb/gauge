@@ -129,7 +129,7 @@ fn the_table() {
             PARK,
         ),
         (
-            "11 a request on an issue whose loop is open is refused",
+            "N11 a request on an issue whose loop is open is refused",
             IssueObservation {
                 request: request(Some(Role::Reference)),
                 run: run(LoopState::Open),
@@ -138,7 +138,7 @@ fn the_table() {
             ALREADY_OPEN,
         ),
         (
-            "11 a request on an issue whose loop is parked is refused",
+            "N11 a request on an issue whose loop is parked is refused",
             IssueObservation {
                 request: request(Some(Role::Project)),
                 run: run(LoopState::Parked),
@@ -230,10 +230,9 @@ fn rows_are_in_table_order() {
     let orders: Vec<u8> = ROWS.iter().map(|r| r.order).collect();
     let mut sorted = orders.clone();
     sorted.sort_unstable();
-    sorted.dedup();
     assert_eq!(orders, sorted);
     let numbers: Vec<&str> = ROWS.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, ["13", "N1", "11"]);
+    assert_eq!(numbers, ["13", "N1", "N11", "11"]);
 }
 
 #[test]

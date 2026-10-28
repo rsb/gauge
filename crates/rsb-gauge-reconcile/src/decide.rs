@@ -102,7 +102,8 @@ pub struct Decision {
 
 /// One row of the table: its place in the spec, and the test it applies.
 pub struct Row {
-    /// The order in the M1 table.
+    /// The order in the M1 table. A lettered row (7a) shares its number's
+    /// order and comes before it.
     pub order: u8,
     /// The number in the PRD (§3.3) or the spec (`N`-rows).
     pub number: &'static str,
@@ -124,6 +125,11 @@ pub const ROWS: &[Row] = &[
         order: 6,
         number: "N1",
         rule: ineligible,
+    },
+    Row {
+        order: 7,
+        number: "N11",
+        rule: loop_already_open,
     },
     Row {
         order: 7,
@@ -175,19 +181,25 @@ fn ineligible(issue: &IssueObservation) -> Option<Decision> {
     })
 }
 
-/// Row 11, with its complement: a request on an issue whose loop is not
-/// closed is refused and the loop left as it is, so a second request can
-/// neither open a second loop nor disturb the first.
-fn run_requested(issue: &IssueObservation) -> Option<Decision> {
+/// Row N11: a request on an issue whose loop is not closed, open or parked,
+/// is refused and the loop left as it is, so a second request can neither
+/// open a second loop nor disturb the first.
+fn loop_already_open(issue: &IssueObservation) -> Option<Decision> {
     issue.request.as_ref()?;
-    let action = match issue.run {
-        None => Action::OpenLoop,
-        Some(_) => Action::Refuse {
-            refusal: Refusal::LoopAlreadyOpen {},
-        },
-    };
+    issue.run.as_ref()?;
     Some(Decision {
         situation: Situation::RunRequested,
-        action,
+        action: Action::Refuse {
+            refusal: Refusal::LoopAlreadyOpen {},
+        },
+    })
+}
+
+/// Row 11: a request on an issue with no loop that is not closed opens one.
+fn run_requested(issue: &IssueObservation) -> Option<Decision> {
+    issue.request.as_ref()?;
+    Some(Decision {
+        situation: Situation::RunRequested,
+        action: Action::OpenLoop,
     })
 }
