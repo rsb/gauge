@@ -1075,6 +1075,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsb-gauge-reconcile"
+version = "0.1.0"
+dependencies = [
+ "rsb-gauge-schema",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "rsb-gauge-schema"
 version = "0.1.0"
 dependencies = [

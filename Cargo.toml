@@ -8,6 +8,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+rsb-gauge-reconcile = { path = "crates/rsb-gauge-reconcile" }
 rsb-gauge-schema = { path = "crates/rsb-gauge-schema" }
 clap = { version = "4", features = ["derive"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
@@ -25,6 +26,7 @@ ureq = { version = "3", features = ["json"] }
 # in strictly lower layers. See engineering/layers.md.
 [workspace.metadata.layers]
 rsb-gauge-schema = 0
+rsb-gauge-reconcile = 1
 rsb-gauge-cli = "exempt"
 agent-driver = "exempt"
 xtask = "exempt"
