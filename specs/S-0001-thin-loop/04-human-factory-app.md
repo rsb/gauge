@@ -47,7 +47,12 @@ seams: []
 
 ## Criteria
 
-- [ ] An installation token minted from the key and scoped to
+- [x] An installation token minted from the key and scoped to
       `ref-rsb-serverless-stack` can read its issues and cannot read
       any other repo.
-- [ ] The key is not readable from inside agent-box.
+- [x] The key is not readable from inside agent-box.
+
+Done 2026-10-28: App id 5352731, installation 172257129, key at
+`~/.config/rsb/agent-driver/app.pem`; checks recorded in
+`runbooks/github-app.md`. Workflows permission left at No access, so no
+attempt can change the `scorecard` workflow.
