@@ -318,6 +318,15 @@ impl Attempts for FakeAttempts {
         Ok(self.units.get(name).copied().unwrap_or(UnitSeen::Absent))
     }
 
+    fn running(&mut self) -> Result<BTreeSet<String>, Error> {
+        Ok(self
+            .units
+            .iter()
+            .filter(|(name, seen)| name.starts_with("gauge-run-") && **seen == UnitSeen::Running)
+            .map(|(name, _)| name.clone())
+            .collect())
+    }
+
     fn start(&mut self, launch: &Launch) -> Result<(), Error> {
         self.starts.push(launch.clone());
         if self.unit(&launch.unit)? != UnitSeen::Absent {

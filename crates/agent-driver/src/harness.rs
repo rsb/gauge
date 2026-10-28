@@ -5,6 +5,7 @@
 //! event repeated. Later tickets add their rows' scenarios to [`scenarios`].
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rsb_gauge_reconcile::adapter::RunOutput;
@@ -444,6 +445,11 @@ impl<A: Attempts> Attempts for KillableAttempts<'_, A> {
     fn unit(&mut self, name: &str) -> Result<UnitSeen, Error> {
         self.gate("unit")?;
         self.inner.unit(name)
+    }
+
+    fn running(&mut self) -> Result<BTreeSet<String>, Error> {
+        self.gate("running")?;
+        self.inner.running()
     }
 
     fn start(&mut self, launch: &Launch) -> Result<(), Error> {
@@ -1451,6 +1457,72 @@ fn started_attempt() -> (MemoryStore, World) {
 }
 
 const UNIT: &str = "gauge-run-1-1";
+
+#[test]
+fn two_open_loops_run_one_attempt_at_a_time() {
+    let mut store = MemoryStore::new();
+    let mut world = world();
+    ask(&mut store, "lumen", 5);
+    ask(&mut store, REF, 6);
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(store.loops().unwrap().len(), 2);
+    let running = |world: &World| {
+        let units = &world.attempts.units;
+        units
+            .iter()
+            .filter(|(_, seen)| **seen == UnitSeen::Running)
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // One start; the other loop is held, however many ticks run.
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    let situations: Vec<_> = report
+        .lines
+        .iter()
+        .map(|l| l.decision.map(|d| d.situation))
+        .collect();
+    assert_eq!(
+        situations,
+        [Some(Situation::AttemptDue), Some(Situation::AttemptHeld)]
+    );
+    for _ in 0..3 {
+        tick_in(&mut store, &mut world, Mode::Act);
+    }
+    assert_eq!(world.attempts.starts.len(), 1);
+    let first = world.attempts.starts[0].unit.clone();
+    assert_eq!(running(&world), std::slice::from_ref(&first));
+    assert_eq!(of_kind(&store, EventKind::BriefIssued).len(), 1);
+
+    // The first exits: its end is recorded, and the held loop starts in
+    // the same tick.
+    world
+        .attempts
+        .set(&first, UnitSeen::Exited { code: Some(3) });
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(world.attempts.starts.len(), 2);
+    let second = world.attempts.starts[1].unit.clone();
+    assert_ne!(second, first);
+    assert_eq!(running(&world), [second]);
+    assert_eq!(of_kind(&store, EventKind::AttemptEnded).len(), 1);
+}
+
+#[test]
+fn a_running_attempt_unit_of_no_open_loop_holds_a_start() {
+    let (mut store, mut world) = opened_loop();
+    world.attempts.set("gauge-run-9-1", UnitSeen::Running);
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(
+        report.lines[0].decision.map(|d| d.situation),
+        Some(Situation::AttemptHeld)
+    );
+    assert!(world.attempts.starts.is_empty());
+    world
+        .attempts
+        .set("gauge-run-9-1", UnitSeen::Exited { code: Some(0) });
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(world.attempts.starts.len(), 1);
+}
 
 #[test]
 fn the_next_tick_after_a_loop_opens_runs_one_unit_with_the_workspace_and_no_credential() {

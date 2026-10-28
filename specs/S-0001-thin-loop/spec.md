@@ -167,6 +167,7 @@ park list and attempt causes from that record.
 | 23 | 3 | Attempt failed with a recorded cause (`exited_nonzero`, `timed_out`, `no_outbox`, `intent_lost`, `work_lost`), budget left | new attempt with the cause's resume brief, after backoff | 07 |
 | 24 | N6 | Loop open, no attempt yet | start attempt 1 | 06 |
 | 25 | 14 | Drain flag | gate: rows 22 to 24 start nothing; lower rows still apply | 03 |
+| 25 | N14 | Another attempt's unit (`gauge-run-*`) running | gate: rows 22 to 24 start nothing; lower rows still apply. M1 runs one attempt at a time because every box shares the one Claude sign-in, whose refresh two boxes would race (the known limit from agent-box PR A, de5eed5) | 06 |
 | 26 | 2 | PR open, `scorecard` not yet complete on the head | wait | 08 |
 | 27 | 6 | `scorecard` GREEN or AMBER on the head, PR open | wait for the owner | 08 |
 | 28 | 10 | Anything else | park `unrecognized_state`, observation attached | 03 |

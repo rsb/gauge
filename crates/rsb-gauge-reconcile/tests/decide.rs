@@ -16,6 +16,7 @@ fn issue() -> IssueObservation {
         issue: 7,
         paused: false,
         draining: false,
+        another_running: false,
         request: None,
         run: None,
     }
@@ -293,6 +294,23 @@ fn the_table() {
             START_1,
         ),
         (
+            "N14 another attempt's unit runs: attempt 1 waits",
+            IssueObservation {
+                another_running: true,
+                run: run(LoopState::Open),
+                ..issue()
+            },
+            decision(Situation::AttemptHeld, Action::Wait {}),
+        ),
+        (
+            "N14 another attempt's unit runs: a brief issued, no unit, waits",
+            IssueObservation {
+                another_running: true,
+                ..attempt(UnitSeen::Absent, None, false)
+            },
+            decision(Situation::AttemptHeld, Action::Wait {}),
+        ),
+        (
             "1 running within its bound waits",
             attempt(UnitSeen::Running, recorded(false), false),
             decision(Situation::AttemptRunning, Action::Wait {}),
@@ -508,6 +526,49 @@ fn drain_holds_a_start_but_not_the_record_of_a_started_unit() {
 }
 
 #[test]
+fn another_running_attempt_holds_a_start_but_not_the_record_of_a_started_unit() {
+    let held = |o: IssueObservation| {
+        decide(&Observation::Issue(IssueObservation {
+            another_running: true,
+            ..o
+        }))
+    };
+    let wait = decision(Situation::AttemptHeld, Action::Wait {});
+    assert_eq!(
+        held(IssueObservation {
+            run: run(LoopState::Open),
+            ..issue()
+        }),
+        wait
+    );
+    assert_eq!(held(attempt(UnitSeen::Absent, None, false)), wait);
+    // A tick killed after the start: this loop's own unit is recorded.
+    assert_eq!(held(attempt(UnitSeen::Running, None, false)), START_1);
+    for o in [
+        attempt(UnitSeen::Running, recorded(false), false),
+        attempt(UnitSeen::Running, recorded(true), false),
+        attempt(UnitSeen::Exited { code: Some(2) }, recorded(false), false),
+        IssueObservation {
+            request: request(Some(Role::Reference)),
+            ..issue()
+        },
+        issue(),
+    ] {
+        assert_eq!(held(o.clone()), decide(&Observation::Issue(o)));
+    }
+    // Drain and the hold together: drain is the reason recorded.
+    assert_eq!(
+        decide(&Observation::Issue(IssueObservation {
+            draining: true,
+            another_running: true,
+            run: run(LoopState::Open),
+            ..issue()
+        })),
+        decision(Situation::Draining, Action::Wait {})
+    );
+}
+
+#[test]
 fn drain_changes_no_decision_but_a_start() {
     let observations = [
         issue(),
@@ -541,7 +602,9 @@ fn rows_are_in_table_order() {
     let numbers: Vec<&str> = ROWS.iter().map(|r| r.number).collect();
     assert_eq!(
         numbers,
-        ["13", "N1", "N11", "N12", "11", "1", "N2", "N13", "N6", "14"]
+        [
+            "13", "N1", "N11", "N12", "11", "1", "N2", "N13", "N6", "14", "N14"
+        ]
     );
 }
 

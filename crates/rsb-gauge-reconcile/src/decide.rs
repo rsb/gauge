@@ -42,6 +42,9 @@ vocabulary! {
         AttemptDue = "attempt_due",
         /// A drain flag holds an attempt that would start.
         Draining = "draining",
+        /// Another attempt's unit runs: an attempt that would start waits
+        /// for it.
+        AttemptHeld = "attempt_held",
         /// No row matched.
         Unrecognized = "unrecognized",
     }
@@ -169,7 +172,10 @@ pub struct Row {
 /// row comes before all of them and is not per issue: see [`decide`].
 ///
 /// Row 25 (14, drain) is a gate on rows 22 to 24, which start attempts: row
-/// N6 starts nothing while draining, and the drain row then waits.
+/// N6 starts nothing while draining, and the drain row then waits. Row N14
+/// is the same gate while another attempt's unit runs: M1 runs one attempt
+/// at a time, because the attempts share one sign-in whose refresh two
+/// boxes would race (agent-box PR A).
 ///
 /// Rows 8, 9, N13 and 24 apply to an open loop only: rows 4 and 5 (parked,
 /// ticket 09) come before them, and until then a parked loop falls through
@@ -224,6 +230,11 @@ pub const ROWS: &[Row] = &[
         order: 25,
         number: "14",
         rule: draining,
+    },
+    Row {
+        order: 25,
+        number: "N14",
+        rule: attempt_held,
     },
 ];
 
@@ -400,20 +411,22 @@ fn attempt_exited(issue: &IssueObservation) -> Option<Decision> {
 /// Row N6: an open loop with no attempt starts attempt 1, and one whose
 /// current brief is issued but whose attempt is not recorded (a tick killed
 /// between the two) starts it again: the start looks the unit up first.
-/// Gated by drain, unless the unit is already there to be recorded.
+/// Gated by drain and by another attempt's running unit, unless this
+/// attempt's unit is already there to be recorded.
 fn attempt_due(issue: &IssueObservation) -> Option<Decision> {
     let run = open_loop(issue)?;
+    let gated = issue.draining || issue.another_running;
     let attempt = match &run.attempt {
         None => 1,
         Some(a) if a.recorded.is_none() => {
-            if issue.draining && a.unit == UnitSeen::Absent {
+            if gated && a.unit == UnitSeen::Absent {
                 return None;
             }
             a.number
         }
         Some(_) => return None,
     };
-    if issue.draining && run.attempt.is_none() {
+    if gated && run.attempt.is_none() {
         return None;
     }
     Some(Decision {
@@ -427,6 +440,16 @@ fn draining(issue: &IssueObservation) -> Option<Decision> {
     open_loop(issue)?;
     issue.draining.then_some(Decision {
         situation: Situation::Draining,
+        action: Action::Wait {},
+    })
+}
+
+/// Row N14: another attempt's unit runs over a loop whose attempt would
+/// start: wait. One attempt at a time at M1 (see [`ROWS`]).
+fn attempt_held(issue: &IssueObservation) -> Option<Decision> {
+    open_loop(issue)?;
+    issue.another_running.then_some(Decision {
+        situation: Situation::AttemptHeld,
         action: Action::Wait {},
     })
 }

@@ -35,6 +35,9 @@ pub struct IssueObservation {
     pub paused: bool,
     /// A drain flag, global or on this loop.
     pub draining: bool,
+    /// A unit `gauge-run-*` other than this loop's current attempt's is
+    /// running.
+    pub another_running: bool,
     pub request: Option<RequestSeen>,
     /// The loop that is not closed, if any.
     pub run: Option<LoopSeen>,
@@ -194,13 +197,15 @@ impl IssueRows {
 
     /// The observation of this issue under `flags`, with `role` from
     /// `repos.toml`, `world` from GitHub, and `attempt` what the driver saw
-    /// of the current attempt's unit and outbox, at `now`.
+    /// of the current attempt's unit and outbox, and `another_running`
+    /// whether a unit of any other attempt runs, at `now`.
     pub fn observe(
         &self,
         flags: &[Flag],
         role: Option<Role>,
         world: Option<WorldSeen>,
         attempt: Option<AttemptWorld>,
+        another_running: bool,
         now: i64,
     ) -> Observation {
         let flagged = |kind| {
@@ -223,6 +228,7 @@ impl IssueRows {
             issue: self.issue,
             paused: flagged(FlagKind::Pause),
             draining: flagged(FlagKind::Drain),
+            another_running,
             request,
             run: self.run.as_ref().map(|run| LoopSeen {
                 id: run.id,

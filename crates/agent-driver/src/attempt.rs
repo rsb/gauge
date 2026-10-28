@@ -8,6 +8,7 @@
 //! clone, on the attempt's branch) and `run/` (`brief.json`, `outbox/`, and
 //! the unit's `agent.json` and `drive.log`, which the box does not mount).
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -160,6 +161,9 @@ pub trait Attempts {
     /// The unit named `name`, as systemd shows it.
     fn unit(&mut self, name: &str) -> Result<UnitSeen, Error>;
 
+    /// The attempt units, `gauge-run-*`, that are running, by name.
+    fn running(&mut self) -> Result<BTreeSet<String>, Error>;
+
     /// Starts the unit. Fails when a unit of that name is loaded.
     fn start(&mut self, launch: &Launch) -> Result<(), Error>;
 
@@ -228,14 +232,46 @@ pub fn parse_unit(unit: &str, show: &str) -> Result<UnitSeen, Error> {
     if load == "not-found" {
         return Ok(UnitSeen::Absent);
     }
+    if is_running(active, sub) {
+        return Ok(UnitSeen::Running);
+    }
     Ok(match active {
         "active" if sub == "exited" => exited(),
-        "active" | "activating" | "deactivating" | "reloading" | "refreshing" => UnitSeen::Running,
         "failed" => exited(),
         "inactive" if code != 0 => exited(),
         "inactive" => UnitSeen::Absent,
         _ => return Err(unknown()),
     })
+}
+
+/// Whether a unit whose `ActiveState` and `SubState` are these is running:
+/// starting, running or stopping. An exited unit kept by `RemainAfterExit`
+/// is `active exited`, and is not.
+fn is_running(active: &str, sub: &str) -> bool {
+    match active {
+        "active" => sub != "exited",
+        "activating" | "deactivating" | "reloading" | "refreshing" => true,
+        _ => false,
+    }
+}
+
+/// Reads `systemctl list-units --all --plain --no-legend` into the names of
+/// the units that are running, without `.service`. The columns are unit,
+/// load, active, sub and description.
+pub fn parse_running(list: &str) -> BTreeSet<String> {
+    list.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().skip_while(|f| *f == "●");
+            let (unit, _load, active, sub) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+            );
+            is_running(active, sub)
+                .then(|| unit.strip_suffix(".service").unwrap_or(unit).to_owned())
+        })
+        .collect()
 }
 
 /// The live attempts: workspaces under `root`, units on the user's systemd.
@@ -329,6 +365,23 @@ impl Attempts for LiveAttempts {
             ],
         )?;
         parse_unit(name, &show)
+    }
+
+    fn running(&mut self) -> Result<BTreeSet<String>, Error> {
+        let list = run(
+            "systemctl",
+            None,
+            &[
+                "--user",
+                "list-units",
+                "--all",
+                "--plain",
+                "--no-legend",
+                "--full",
+                "gauge-run-*.service",
+            ],
+        )?;
+        Ok(parse_running(&list))
     }
 
     fn start(&mut self, launch: &Launch) -> Result<(), Error> {
@@ -616,6 +669,21 @@ pub mod tests {
             UnitSeen::Exited { code: Some(0) }
         );
         assert!(parse_unit("u", "LoadState=loaded\nActiveState=odd\n").is_err());
+    }
+
+    #[test]
+    fn systemctl_list_units_reads_as_the_running_attempt_units() {
+        let list = "\
+gauge-run-1-1.service loaded active   running      gauge attempt
+gauge-run-2-1.service loaded active   exited       gauge attempt
+● gauge-run-3-1.service loaded failed failed       gauge attempt
+gauge-run-4-1.service loaded deactivating stop-sigterm gauge attempt
+gauge-run-5-1.service loaded activating start      gauge attempt
+gauge-run-6-1.service loaded inactive dead         gauge attempt
+";
+        let running: Vec<String> = parse_running(list).into_iter().collect();
+        assert_eq!(running, ["gauge-run-1-1", "gauge-run-4-1", "gauge-run-5-1"]);
+        assert!(parse_running("").is_empty());
     }
 
     /// Runs git in `dir`, as a test author.

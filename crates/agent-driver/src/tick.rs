@@ -8,8 +8,8 @@
 use rsb_gauge_reconcile::adapter::{AgentAdapter, AttemptSpec, ClaudeAdapter};
 use rsb_gauge_reconcile::brief::{self, Brief, FreshBrief};
 use rsb_gauge_reconcile::store::{
-    Agent, Applied, AttemptCause, AttemptEnd, LabelKey, Loop, LoopId, LoopTicket, NewAttempt,
-    Request, RequestId, Store, Write, unit_name,
+    Agent, Applied, AttemptCause, AttemptEnd, LabelKey, Loop, LoopId, LoopState, LoopTicket,
+    NewAttempt, Request, RequestId, Store, Write, unit_name,
 };
 use rsb_gauge_reconcile::{
     Action, AttemptWorld, Decision, IssueRows, Observation, ParkReason, Refusal, Situation,
@@ -335,8 +335,18 @@ fn reconcile<S: Store, G: GitHub, A: Attempts>(
         }
         None => None,
     };
+    // One attempt at a time (row N14): any other attempt's running unit,
+    // looked up per issue so a start earlier in this tick counts.
+    let another_running = match rows.run.as_ref().filter(|r| r.state == LoopState::Open) {
+        Some(run) => {
+            let own = rows.current().map(|number| unit_name(run.id, number));
+            let running = ports.attempts.running().map_err(UnitError::Attempt)?;
+            running.iter().any(|name| Some(name) != own.as_ref())
+        }
+        None => false,
+    };
     let now = clock.now();
-    let observation = rows.observe(flags, role, world.clone(), attempt, now);
+    let observation = rows.observe(flags, role, world.clone(), attempt, another_running, now);
     let decision = decide(&observation);
     *decided = Some(decision);
     if mode == Mode::Observe {
