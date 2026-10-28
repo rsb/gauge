@@ -145,7 +145,8 @@ park list and attempt causes from that record.
 | 4 | 16 | Parked, resume requested | clear the park; reset the no-progress memory; continue | 09 |
 | 5 | 17 | Parked | wait | 09 |
 | 6 | N1 | Run requested on a repo not eligible (role not `project` or `reference`, or no lockfile on the default branch) | refuse the request with its reason; no loop | 03 (role), 05 (lockfile) |
-| 7 | 11 | Run requested, eligible, no open loop for this issue | open the loop | 03 |
+| 7a | N11 | Run requested, eligible, a loop for this issue that is not closed (open or parked) | refuse the request `loop_already_open`; leave the loop untouched | 03 |
+| 7 | 11 | Run requested, eligible, no loop for this issue that is not closed | open the loop | 03 |
 | 8 | 1 | Attempt running, within its runtime bound | wait | 06 |
 | 9 | N2 | Attempt running past its runtime bound | stop the unit; failed attempt, cause `timed_out` | 06 |
 | 10 | 4 | Attempt exited, unpushed commits in its workspace | push the branch; record `pushed` | 07 |

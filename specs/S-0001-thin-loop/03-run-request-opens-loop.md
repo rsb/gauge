@@ -85,22 +85,22 @@ shared Cloudflare store (M5).
 
 ## Criteria
 
-- [ ] A request for an eligible repo opens exactly one loop, however
+- [x] A request for an eligible repo opens exactly one loop, however
       many ticks run and wherever a tick is killed.
-- [ ] A request for a repo with role `factory` or `record`, or a repo
+- [x] A request for a repo with role `factory` or `record`, or a repo
       absent from `repos.toml`, is refused with a reason event and opens
       no loop.
-- [ ] An observation matching no row parks `unrecognized_state` with
+- [x] An observation matching no row parks `unrecognized_state` with
       the observation in the event payload.
-- [ ] With the store unreachable, a tick performs no action and exits
+- [x] With the store unreachable, a tick performs no action and exits
       non-zero with a named reason.
-- [ ] `gauge events --since n` returns every event after n in order;
+- [x] `gauge events --since n` returns every event after n in order;
       `--follow` resumes from the last sequence it printed after a
       restart.
-- [ ] Each closed enum has a test that an unknown outside value is an
+- [x] Each closed enum has a test that an unknown outside value is an
       error value, never a default.
-- [ ] The layering check is still green: none of this is in a crate
+- [x] The layering check is still green: none of this is in a crate
       that may not hold it.
-- [ ] `tick --observe` prints the same situation and action a real
+- [x] `tick --observe` prints the same situation and action a real
       tick would take for every loop, and writes nothing to the store
       or the world (asserted against the fakes).

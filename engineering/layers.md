@@ -7,11 +7,13 @@ are exempt, and no layered crate depends on them.
 
 | Layer | Crate | Holds |
 |---|---|---|
-| 0 | `rsb-gauge-schema` | Rule types, the TOML loader, the JSON Schema, the registry linter. No I/O past reading rule files. |
+| 0 | `rsb-gauge-schema` | Rule types, the TOML loader, the JSON Schema, the registry linter, `repos.toml`. No I/O past reading rule files and `repos.toml`. |
+| 1 | `rsb-gauge-reconcile` | The closed enums, the pure `decide`, the store port and its in-memory fake. No I/O. |
+| 2 | `rsb-gauge-store` | The SQLite adapter for the store port. |
 | exempt | `rsb-gauge-cli`, `agent-driver`, `xtask` | Binaries and tooling. |
 
-Planned: `rsb-gauge-reconcile`, `rsb-gauge-render` and `rsb-gauge-checks` at
-1, `rsb-gauge-score` and `rsb-gauge-mint` at 2, `rsb-gauge-lab` at 3,
+Planned: `rsb-gauge-render` and `rsb-gauge-checks` at 1, `rsb-gauge-score`
+and `rsb-gauge-mint` at 2, `rsb-gauge-lab` at 3,
 `insights` exempt. A crate joins the table when it is created, not before.
 
 **Why.** The schema stays a pure data layer every other crate can read

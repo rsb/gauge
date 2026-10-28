@@ -18,4 +18,8 @@ pub enum RegistryError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("{path} has schema {found}; this build reads schema 1")]
+    ReposSchema { path: PathBuf, found: u32 },
+    #[error("{path} lists {name} twice")]
+    ReposDuplicate { path: PathBuf, name: String },
 }
