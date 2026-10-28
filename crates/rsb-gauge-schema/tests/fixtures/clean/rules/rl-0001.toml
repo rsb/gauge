@@ -1,18 +1,17 @@
-id = "ERR-1"
+id = "rl-0001"
 statement = "Return a `Result<T, E>`. Never throw or reject."
 why = """
 A thrown error escapes the type system and the log line, and an isolate
 serves many requests."""
-check_class = "mechanical"
-default_level = "error"
+check_class = "exact"
+consequence = "coherence"
 contracts = ["packages/core/result/src/result.ts"]
 exemplars = ["packages/business/user/src/invitation.ts"]
 patterns = ["errors-as-values"]
 
 [scope]
-tree = "rsb/web"
-toolchain = "typescript"
-paths = ["packages/**/src/**", "apps/**/src/**"]
+paths = ["src/**"]
+exclude = ["src/**/*.test.ts"]
 
 [lifecycle]
 state = "enforced"
@@ -20,4 +19,4 @@ since = "2026-10-13"
 
 [[checks]]
 kind = "eslint"
-ref = "no-restricted-syntax: Return a Result. See ERR-1."
+ref = "no-restricted-syntax: Return a Result. See rl-0001."

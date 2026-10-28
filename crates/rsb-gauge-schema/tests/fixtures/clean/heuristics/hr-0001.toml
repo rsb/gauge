@@ -1,0 +1,16 @@
+id = "hr-0001"
+statement = "Prefer treating a Durable Object's method as its unit of work, awaiting only its storage."
+why = "The object runs one event at a time and holds itself for a method that awaits only storage."
+check_class = "approximate"
+
+[scope]
+paths = ["src/objects/**"]
+
+[lifecycle]
+state = "trial"
+since = "2026-10-19"
+
+[[checks]]
+kind = "ast-grep"
+ref = "checks/do-awaits-only-storage.yml"
+precision = 0.8

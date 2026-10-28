@@ -7,7 +7,7 @@ are exempt, and no layered crate depends on them.
 
 | Layer | Crate | Holds |
 |---|---|---|
-| 0 | `rsb-gauge-schema` | Rule types, the TOML loader, the JSON Schema, the registry linter, `repos.toml`. No I/O past reading rule files and `repos.toml`. |
+| 0 | `rsb-gauge-schema` | Rule and heuristic types, the TOML loader, their JSON Schemas, the registry linter, `repos.toml`. No I/O past reading rule and heuristic files and `repos.toml`. |
 | 1 | `rsb-gauge-reconcile` | The closed enums, the pure `decide`, the store port and its in-memory fake. No I/O. |
 | 2 | `rsb-gauge-store` | The SQLite adapter for the store port. |
 | exempt | `rsb-gauge-cli`, `agent-driver`, `xtask` | Binaries and tooling. |

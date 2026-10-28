@@ -1,13 +1,11 @@
-id = "ERR-3"
+id = "hr-0001"
 statement = "Read every Result. Check it or return it."
 why = "A dropped Result is a failure no one sees."
-check_class = "mechanical"
-default_level = "error"
+check_class = "approximate"
 
 [scope]
-tree = "rsb/web"
 paths = ["packages/**"]
 
 [lifecycle]
-state = "retired"
-since = "19-10-2026"
+state = "trial"
+since = "2026-10-28"
