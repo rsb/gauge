@@ -42,11 +42,11 @@ fn decision(situation: Situation, action: Action) -> Decision {
 
 const WAIT_PAUSED: Decision = Decision {
     situation: Situation::Paused,
-    action: Action::Wait,
+    action: Action::Wait {},
 };
 const OPEN: Decision = Decision {
     situation: Situation::RunRequested,
-    action: Action::OpenLoop,
+    action: Action::OpenLoop {},
 };
 const PARK: Decision = Decision {
     situation: Situation::Unrecognized,
@@ -165,7 +165,7 @@ fn the_table() {
 fn an_unreachable_store_takes_no_action() {
     assert_eq!(
         decide(&Observation::StoreUnreachable),
-        decision(Situation::StoreUnreachable, Action::Wait)
+        decision(Situation::StoreUnreachable, Action::Wait {})
     );
 }
 

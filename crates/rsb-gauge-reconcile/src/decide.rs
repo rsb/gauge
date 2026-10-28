@@ -67,13 +67,14 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// The one next step for an issue.
+/// The one next step for an issue. The fieldless actions are written `{}`
+/// for the reason given on [`Refusal`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// Do nothing this tick.
-    Wait,
-    OpenLoop,
+    Wait {},
+    OpenLoop {},
     Refuse {
         refusal: Refusal,
     },
@@ -85,8 +86,8 @@ pub enum Action {
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Wait => f.write_str("wait"),
-            Self::OpenLoop => f.write_str("open loop"),
+            Self::Wait {} => f.write_str("wait"),
+            Self::OpenLoop {} => f.write_str("open loop"),
             Self::Refuse { refusal } => write!(f, "refuse: {refusal}"),
             Self::Park { reason } => write!(f, "park {reason}"),
         }
@@ -152,7 +153,7 @@ pub fn decide(observation: &Observation) -> Decision {
     match observation {
         Observation::StoreUnreachable => Decision {
             situation: Situation::StoreUnreachable,
-            action: Action::Wait,
+            action: Action::Wait {},
         },
         Observation::Issue(issue) => ROWS
             .iter()
@@ -164,7 +165,7 @@ pub fn decide(observation: &Observation) -> Decision {
 fn paused(issue: &IssueObservation) -> Option<Decision> {
     issue.paused.then_some(Decision {
         situation: Situation::Paused,
-        action: Action::Wait,
+        action: Action::Wait {},
     })
 }
 
@@ -200,6 +201,6 @@ fn run_requested(issue: &IssueObservation) -> Option<Decision> {
     issue.request.as_ref()?;
     Some(Decision {
         situation: Situation::RunRequested,
-        action: Action::OpenLoop,
+        action: Action::OpenLoop {},
     })
 }

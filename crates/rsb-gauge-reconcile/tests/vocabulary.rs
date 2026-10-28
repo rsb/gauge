@@ -94,6 +94,43 @@ fn action_and_refusal() {
 }
 
 #[test]
+fn action() {
+    let members = [
+        (Action::Wait {}, r#"{"action":"wait"}"#),
+        (Action::OpenLoop {}, r#"{"action":"open_loop"}"#),
+        (
+            Action::Refuse {
+                refusal: Refusal::NotListed {},
+            },
+            r#"{"action":"refuse","refusal":{"reason":"not_listed"}}"#,
+        ),
+        (
+            Action::Park {
+                reason: ParkReason::NoProgress,
+            },
+            r#"{"action":"park","reason":"no_progress"}"#,
+        ),
+    ];
+    for (member, json) in members {
+        assert_eq!(serde_json::to_string(&member).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Action>(json).unwrap(), member);
+    }
+    for outside in [
+        r#"{"action":"wait","until":3}"#,
+        r#"{"action":"open_loop","agent":"claude"}"#,
+        r#"{"action":"park","reason":"no_progress","loop":3}"#,
+        r#"{"action":"refuse","refusal":{"reason":"not_listed"},"loop":3}"#,
+        r#"{"action":"Wait"}"#,
+        r#"{}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<Action>(outside).is_err(),
+            "{outside} parsed"
+        );
+    }
+}
+
+#[test]
 fn refusal() {
     let members = [
         (Refusal::NotListed {}, r#"{"reason":"not_listed"}"#),

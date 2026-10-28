@@ -170,7 +170,7 @@ fn reconcile<S: Store>(
         .write(&write, clock.now(), &payload)
         .map_err(UnitError::Store)?
     {
-        Applied::Noop if decision.action == Action::Wait => Ok(Outcome::Waited),
+        Applied::Noop if matches!(decision.action, Action::Wait {}) => Ok(Outcome::Waited),
         applied => Ok(Outcome::Applied(applied)),
     }
 }
@@ -179,11 +179,11 @@ fn reconcile<S: Store>(
 fn plan(rows: &IssueRows, decision: &Decision) -> Option<Write> {
     let requests = || rows.requests.iter().map(|r| r.id).collect();
     match decision.action {
-        Action::Wait => rows.run.as_ref().map(|run| Write::Situation {
+        Action::Wait {} => rows.run.as_ref().map(|run| Write::Situation {
             loop_id: run.id,
             situation: decision.situation,
         }),
-        Action::OpenLoop => {
+        Action::OpenLoop {} => {
             let oldest = rows.requests.first()?;
             Some(Write::OpenLoop {
                 repo: rows.repo.clone(),
@@ -237,7 +237,7 @@ fn payload(
     let (refusal, reason) = match decision.action {
         Action::Refuse { refusal } => (Some(refusal), None),
         Action::Park { reason } => (None, Some(reason)),
-        Action::Wait | Action::OpenLoop => (None, None),
+        Action::Wait {} | Action::OpenLoop {} => (None, None),
     };
     // A park carries the whole observation; the request ids and the
     // registry are on it already.
@@ -251,7 +251,7 @@ fn payload(
         } else {
             rows.requests.iter().map(|r| r.id.0).collect()
         },
-        agent: (decision.action == Action::OpenLoop)
+        agent: matches!(decision.action, Action::OpenLoop {})
             .then(|| rows.requests.first().map(|r| r.agent))
             .flatten(),
         registry: source.filter(|_| !parked),
