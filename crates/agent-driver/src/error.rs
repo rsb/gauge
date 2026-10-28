@@ -1,23 +1,27 @@
 use std::path::PathBuf;
 
+use rsb_gauge_reconcile::Situation;
+use rsb_gauge_schema::RegistryError;
+use rsb_gauge_store::StoreError;
+
 /// Every failure the program reports. None carries a token or a key.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("HOME is not set, so the config directory is unknown")]
     NoHome,
-    #[error("cannot read {path}: {source}")]
+    #[error("cannot read {path}")]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("cannot write {path}: {source}")]
+    #[error("cannot write {path}")]
     Write {
         path: PathBuf,
         source: std::io::Error,
     },
     #[error("{path} is readable by others (mode {mode:o}); run chmod 600")]
     KeyMode { path: PathBuf, mode: u32 },
-    #[error("config {path}: {source}")]
+    #[error("config {path}")]
     Config {
         path: PathBuf,
         source: toml::de::Error,
@@ -33,15 +37,37 @@ pub enum Error {
     Failed(String),
     #[error("the clock is before 1970")]
     Clock,
-    #[error("signing the App JWT: {0}")]
+    #[error("signing the App JWT")]
     Sign(#[from] jsonwebtoken::errors::Error),
     #[error("the App is not installed on {0}")]
     NotInstalled(String),
-    #[error("GitHub {what}: {source}")]
+    #[error("GitHub {what}")]
     Http {
         what: &'static str,
         source: ureq::Error,
     },
     #[error("GitHub returned status {status} for {what}")]
     Status { what: &'static str, status: u16 },
+    #[error("store")]
+    Store(#[from] StoreError),
+    /// The tick's first row: the store cannot be opened, so nothing is done.
+    #[error("{situation}: the tick took no action")]
+    Unreachable {
+        situation: Situation,
+        source: StoreError,
+    },
+    #[error("registry")]
+    Registry(#[from] RegistryError),
+}
+
+/// Renders an error for a person: each error in the `source()` chain, joined
+/// by a colon (engineering/errors.md).
+pub fn report(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(e) = source {
+        out.push_str(&format!(": {e}"));
+        source = e.source();
+    }
+    out
 }
