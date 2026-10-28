@@ -55,6 +55,8 @@ defaults it. A store is tied at creation to the `repos.toml` whose repos its
 ticks may open loops on: `agent-registry`'s for the live store, a file
 listing only a scratch repo for a dev store. Where the store lives and how
 it is created: `runbooks/store.md`.
+The GitHub App, its key and which repos it reaches:
+`runbooks/github-app.md`.
 
 ```sh
 export GAUGE_STORE=~/.local/state/gauge/live.sqlite
