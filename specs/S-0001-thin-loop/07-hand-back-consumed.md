@@ -74,6 +74,18 @@ ambiguous (effects record §1).
   event exists for the attempt (brief: produce the hand-back from head
   X), else `work_lost` (brief: continue from the previous head). Both
   count against the budget.
+- **Launch witness.** `run/drive.log` exists once the unit has
+  started, and survives a reboot that erases the unit. An attempt with
+  `brief_issued` and `drive.log` but no unit and no attempt record
+  (kill point 2, then a reboot) is recorded lost, by the rule above,
+  and never rerun in its directory; the next attempt gets a fresh
+  directory.
+- A row for a recorded attempt with no end whose unit is gone (a
+  logout without linger, a reboot): it ends the attempt with a cause
+  (`no_outbox`, or the sealed outbox consumed as usual) instead of
+  parking `unrecognized_state`.
+- The unit's `StandardOutput` and `StandardError` switch from `file:`
+  to `truncate:`, so no output file keeps bytes from an earlier run.
 - The `attempting` event and `unverified` state exist in the schema and
   the code paths are table-tested; no M1 kind emits them.
 - Retiring the owner-run `handback apply` copy: once this ticket passes
