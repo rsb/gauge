@@ -1,0 +1,21 @@
+{
+  "schema": "brief/v1",
+  "repo": "ref-rsb-serverless-stack",
+  "base_sha": "3f2a9c1e7b4d5a6f8e9d0c1b2a3f4e5d6c7b8a90",
+  "base_branch": "main",
+  "branch": "feat/14-invite-expiry",
+  "ticket_path": "specs/S-0002-invites/02-invite-expiry.md",
+  "spec": "S-0002",
+  "attempt": 1,
+  "kind": "fresh",
+  "outbox_path": "/run/outbox",
+  "runtime_bound": 3600,
+  "allowed_effects": [
+    "pr-open",
+    "issue-comment",
+    "criteria-tick",
+    "deviation",
+    "flagged-for-human",
+    "blocked"
+  ]
+}

@@ -64,6 +64,9 @@ requirement 1).
 - Attempt cause recorded at the end of every attempt that does not
   hand back: `exited_nonzero`, `timed_out`, `stopped` here; the rest
   in 07.
+- `stopped` is in the cause vocabulary here but recorded by the rows
+  that stop a running attempt, 7 (PR merged or closed, 08) and 15
+  (abort, 09): no row in 06 stops one except at its bound, `timed_out`.
 - Branch name derived from the ticket (`<type>/<issue>-<slug>`, as
   today); created locally from the base sha; not pushed here.
 - Claude adapter: `claude -p`, JSON output, `CLAUDE.md` as the one-line
@@ -73,6 +76,27 @@ requirement 1).
 - Agent: Claude only at M1 (R1 declined; Codex at M4). The request's
   `--agent` is stored; `codex` is refused with a reason until its
   adapter exists.
+
+## Q17: no `--bare` (decided 2026-10-28)
+
+The Claude adapter runs `claude -p <prompt> --output-format json
+--model <model>` and does not pass `--bare`. Two reasons, each enough:
+
+- `--bare` reads Anthropic auth only from `ANTHROPIC_API_KEY` or an
+  `apiKeyHelper`, never OAuth. The box signs in with the OAuth sign-in
+  copied from the shared auth volume, so a bare run cannot authenticate,
+  and making it able to would put an API key in the box's environment:
+  a new credential to keep, which D7 counts against the box.
+- `--bare` skips `CLAUDE.md` auto-discovery, and the one-line
+  `CLAUDE.md` pointer is how the agent finds the project's `AGENTS.md`
+  (its check commands, which `implement` step 3 needs).
+
+What `--bare` would buy is already given by the box: the home is a fresh
+tmpfs, so no user hooks, plugins or memory exist, and the managed
+settings are baked into the image. Skills are not the reason either
+way: `claude --help` says `--bare` still resolves `/skill-name`, but
+whether that covers the skills the entrypoint links into
+`~/.claude/skills` was not tested, since the two reasons above settle it.
 
 ## Out of scope
 

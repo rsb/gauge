@@ -11,4 +11,6 @@ pub enum ReconcileError {
     },
     #[error("there is no loop {0}")]
     NoLoop(LoopId),
+    #[error("loop {0} has no attempt {1}")]
+    NoAttempt(LoopId, u32),
 }

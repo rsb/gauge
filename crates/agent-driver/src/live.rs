@@ -171,6 +171,7 @@ mod tests {
         let config = Config::parse(
             "[app]\nid = 1\n[repos.\"rsb/ref-rsb-serverless-stack\"]\n",
             Path::new("/cfg"),
+            Path::new("/home/u"),
         )
         .unwrap();
         let live = Live::new(Ok(&config));

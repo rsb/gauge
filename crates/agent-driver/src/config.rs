@@ -13,6 +13,44 @@ pub struct Config {
     pub app_id: u64,
     pub key_path: PathBuf,
     repos: BTreeMap<String, RepoConfig>,
+    pub attempt: AttemptConfig,
+}
+
+/// How attempts run: the `[attempt]` section, with its defaults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttemptConfig {
+    /// The bot identity agent-box commits as. Both are needed to start an
+    /// attempt; without them a start fails and nothing is issued.
+    pub agent_name: Option<String>,
+    pub agent_email: Option<String>,
+    pub model: String,
+    /// Seconds an attempt may run before it is stopped.
+    pub runtime_bound: u64,
+    /// The agent-box checkout whose `drive.sh` runs the attempt.
+    pub agent_box: PathBuf,
+    /// The rsb-skills checkout whose skills the box mounts.
+    pub rsb_skills: PathBuf,
+}
+
+/// The model an attempt runs when the config names none.
+pub const MODEL: &str = "claude-opus-5-5";
+
+/// The runtime bound when the config gives none: an hour.
+pub const RUNTIME_BOUND: u64 = 3600;
+
+impl AttemptConfig {
+    /// The defaults, with the checkouts under `home`.
+    pub fn defaults(home: &Path) -> Self {
+        let factory = home.join("code/software/rsb/factory");
+        Self {
+            agent_name: None,
+            agent_email: None,
+            model: MODEL.to_owned(),
+            runtime_bound: RUNTIME_BOUND,
+            agent_box: factory.join("agent-box"),
+            rsb_skills: factory.join("rsb-skills"),
+        }
+    }
 }
 
 /// Per-repo settings. Empty until the tick needs them.
@@ -26,6 +64,27 @@ struct File {
     app: AppSection,
     #[serde(default)]
     repos: BTreeMap<String, RepoConfig>,
+    attempt: Option<AttemptSection>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttemptSection {
+    agent_name: Option<String>,
+    agent_email: Option<String>,
+    model: Option<String>,
+    runtime_bound: Option<u64>,
+    /// `~/` expands to the home directory.
+    agent_box: Option<PathBuf>,
+    rsb_skills: Option<PathBuf>,
+}
+
+/// `path` with a leading `~/` taken as `home`.
+fn expand(path: PathBuf, home: &Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(rest) => home.join(rest),
+        Err(_) => path,
+    }
 }
 
 #[derive(Deserialize)]
@@ -67,11 +126,13 @@ impl Config {
             path: path.clone(),
             source,
         })?;
-        Self::parse(&text, &dir).map_err(|source| Error::Config { path, source })
+        let home = PathBuf::from(std::env::var_os("HOME").ok_or(Error::NoHome)?);
+        Self::parse(&text, &dir, &home).map_err(|source| Error::Config { path, source })
     }
 
-    /// Parses the file text. Relative paths resolve against `dir`.
-    pub(crate) fn parse(text: &str, dir: &Path) -> Result<Self, toml::de::Error> {
+    /// Parses the file text. Relative paths resolve against `dir`; `~/` in
+    /// the attempt section against `home`.
+    pub(crate) fn parse(text: &str, dir: &Path, home: &Path) -> Result<Self, toml::de::Error> {
         let file: File = toml::from_str(text)?;
         for name in file.repos.keys() {
             if name.parse::<RepoName>().is_err() {
@@ -85,10 +146,28 @@ impl Config {
                 .key_path
                 .unwrap_or_else(|| PathBuf::from("app.pem")),
         );
+        let mut attempt = AttemptConfig::defaults(home);
+        if let Some(section) = file.attempt {
+            attempt.agent_name = section.agent_name;
+            attempt.agent_email = section.agent_email;
+            if let Some(model) = section.model {
+                attempt.model = model;
+            }
+            if let Some(bound) = section.runtime_bound {
+                attempt.runtime_bound = bound;
+            }
+            if let Some(path) = section.agent_box {
+                attempt.agent_box = expand(path, home);
+            }
+            if let Some(path) = section.rsb_skills {
+                attempt.rsb_skills = expand(path, home);
+            }
+        }
         Ok(Self {
             app_id: file.app.id,
             key_path,
             repos: file.repos,
+            attempt,
         })
     }
 
@@ -131,7 +210,35 @@ id = 123456
 "#;
 
     fn parse(text: &str) -> Result<Config, toml::de::Error> {
-        Config::parse(text, Path::new("/cfg"))
+        Config::parse(text, Path::new("/cfg"), Path::new("/home/u"))
+    }
+
+    #[test]
+    fn the_attempt_section_defaults_and_overrides() {
+        let config = parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            config.attempt,
+            AttemptConfig::defaults(Path::new("/home/u"))
+        );
+        assert_eq!(config.attempt.model, "claude-opus-5-5");
+        assert_eq!(config.attempt.runtime_bound, 3600);
+        assert_eq!(
+            config.attempt.agent_box,
+            Path::new("/home/u/code/software/rsb/factory/agent-box")
+        );
+        let config = parse(
+            "[app]\nid = 1\n[attempt]\nagent_name = \"gauge-bot\"\n\
+             agent_email = \"bot@example.com\"\nmodel = \"m\"\nruntime_bound = 60\n\
+             agent_box = \"~/box\"\nrsb_skills = \"/opt/skills\"\n",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let a = config.attempt;
+        assert_eq!(a.agent_name.as_deref(), Some("gauge-bot"));
+        assert_eq!(a.agent_email.as_deref(), Some("bot@example.com"));
+        assert_eq!((a.model.as_str(), a.runtime_bound), ("m", 60));
+        assert_eq!(a.agent_box, Path::new("/home/u/box"));
+        assert_eq!(a.rsb_skills, Path::new("/opt/skills"));
+        assert!(parse("[app]\nid = 1\n[attempt]\ntoken = \"x\"\n").is_err());
     }
 
     #[test]

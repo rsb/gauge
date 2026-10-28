@@ -69,10 +69,27 @@ gauge events --since <seq> [--follow]                   # the event log by curso
 ```
 
 `agent-driver` reads its App id and key path from
-`~/.config/rsb/agent-driver/config.toml`.
+`~/.config/rsb/agent-driver/config.toml`, and how attempts run from its
+optional `[attempt]` section:
 
-Status: S-0001, the thin loop, ticket 05 (the world observed: the
-`rsb-workflow:run` label opens a loop on a minted repo).
+```toml
+[attempt]
+agent_name = "..."        # the bot identity agent-box commits as;
+agent_email = "..."       # both required to start an attempt
+model = "claude-opus-5-5"                              # the default
+runtime_bound = 3600                                   # seconds, the default
+agent_box = "~/code/software/rsb/factory/agent-box"    # the default
+rsb_skills = "~/code/software/rsb/factory/rsb-skills"  # the default
+```
+
+Status: S-0001, the thin loop, ticket 06 (first attempt: an open loop
+gets its brief, its workspace and one agent-box unit).
+
+An attempt lives in `~/.local/share/gauge/runs/<loop>/<attempt>/`
+(`$XDG_DATA_HOME/gauge/runs`): `repo/`, the clone on the attempt's
+branch, and `run/` with `brief.json`, `outbox/`, and the unit's
+`agent.json` and `drive.log`. It runs as the transient user unit
+`gauge-run-<loop>-<attempt>` (`systemctl --user status <name>`).
 
 A tick polls every repo `repos.toml` gives role `project` or `reference`
 that the driver's config lists, for open issues carrying

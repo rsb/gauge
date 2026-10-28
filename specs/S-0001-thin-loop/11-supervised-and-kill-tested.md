@@ -57,6 +57,10 @@ survives being killed anywhere.
   `superseded`, one park `effect_refused`. The probe loop carries the
   probe mark so Learn excludes it (its form is open in the effects
   record).
+- The install runbook requires `loginctl enable-linger` and checks it,
+  so a logout does not stop a running attempt.
+- The kill harness adds "reboot after kill point 2": the unit
+  disappears and `run/drive.log` stays.
 
 ## Out of scope
 

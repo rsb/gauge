@@ -75,6 +75,19 @@ pub enum Error {
         status: Option<i32>,
         stderr: String,
     },
+    #[error("cannot start {0}")]
+    Start(&'static str, #[source] std::io::Error),
+    /// A command the attempts port runs, with what it printed on stderr.
+    #[error("{what} exited {}: {stderr}", exit(*.status))]
+    Command {
+        what: String,
+        status: Option<i32>,
+        stderr: String,
+    },
+    #[error("systemd shows unit {unit} in a state the driver does not know: {state}")]
+    UnitState { unit: String, state: String },
+    #[error("set agent_name and agent_email in the driver's [attempt] config to start an attempt")]
+    NoAgentIdentity,
 }
 
 fn exit(status: Option<i32>) -> String {

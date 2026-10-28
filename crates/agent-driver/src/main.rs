@@ -6,6 +6,7 @@
 // Kept from the old `agent-driver` for the tick: the token holder, the issue
 // write operations and the audit log. `serve`, their only caller, was not
 // moved.
+mod attempt;
 #[expect(dead_code, reason = "the audit log is the seed of the tick's events")]
 mod audit;
 mod config;
@@ -22,6 +23,8 @@ mod tokens;
 mod world;
 
 #[cfg(test)]
+mod contract;
+#[cfg(test)]
 mod fake;
 #[cfg(test)]
 mod harness;
@@ -33,6 +36,7 @@ use clap::{Parser, Subcommand};
 use rsb_gauge_reconcile::{Observation, decide};
 use rsb_gauge_store::SqliteStore;
 
+use crate::attempt::{LiveAttempts, Settings};
 use crate::config::Config;
 use crate::error::{Error, report};
 use crate::github::{Access, Client, Permissions};
@@ -130,10 +134,22 @@ fn tick_store(path: &Path, mode: Mode) -> Result<Report, Error> {
     // and fails only the requests that need GitHub.
     let config = Config::load().map_err(|e| report(&e));
     let mut github = Live::new(config.as_ref().map_err(Clone::clone));
+    // Without its config no attempt starts; the rest of the tick runs.
+    let settings = config.as_ref().map_err(Clone::clone).map(|c| Settings {
+        config: c.attempt.clone(),
+        path: std::env::var("PATH").unwrap_or_default(),
+        home: std::env::var("HOME").unwrap_or_default(),
+    });
+    let mut attempts = LiveAttempts::new(attempt::runs_root(
+        std::env::var_os("XDG_DATA_HOME"),
+        std::env::var_os("HOME"),
+    )?);
     Ok(tick::run(
         &mut store,
         &mut github,
+        &mut attempts,
         &registry,
+        &settings,
         &SystemClock,
         mode,
     )?)

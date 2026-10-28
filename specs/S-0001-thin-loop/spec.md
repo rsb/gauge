@@ -147,9 +147,10 @@ park list and attempt causes from that record.
 | 6 | N1 | Run requested on a repo not eligible (role not `project` or `reference`, or no lockfile on the default branch; or a repo the driver's config does not list, `not_reached`) | refuse the request with its reason; no loop | 03 (role), 05 (lockfile) |
 | 7a | N11 | Run requested, eligible, a loop for this issue that is not closed (open or parked) | refuse the request `loop_already_open`; leave the loop untouched | 03 |
 | 7b | N12 | Run requested, eligible, the issue names no ticket file on the default branch | refuse the request `no_ticket` with its cause; no loop | 05 |
-| 7 | 11 | Run requested, eligible, no loop for this issue that is not closed | open the loop | 03 |
+| 7 | 11 | Run requested, eligible, no loop for this issue that is not closed | open the loop; a request for an agent with no adapter yet (`codex` until M4) is refused `no_adapter` | 03, 06 |
 | 8 | 1 | Attempt running, within its runtime bound | wait | 06 |
 | 9 | N2 | Attempt running past its runtime bound | stop the unit; failed attempt, cause `timed_out` | 06 |
+| 9 | N13 | Attempt's unit exited, its end not recorded | record the end; cause `exited_nonzero` when non-zero (or a signal) with no sealed outbox | 06 |
 | 10 | 4 | Attempt exited, unpushed commits in its workspace | push the branch; record `pushed` | 07 |
 | 11 | N7 | Workspace or sealed outbox for an attempt that is not the loop's current attempt | discard; record `workspace_discarded` (one-machine table test at M1; leases at M5) | 07 |
 | 12 | N3 | Sealed outbox on disk, not recorded, valid against the brief | record `outbox_recorded`; effects created `pending` | 07 |
@@ -166,6 +167,7 @@ park list and attempt causes from that record.
 | 23 | 3 | Attempt failed with a recorded cause (`exited_nonzero`, `timed_out`, `no_outbox`, `intent_lost`, `work_lost`), budget left | new attempt with the cause's resume brief, after backoff | 07 |
 | 24 | N6 | Loop open, no attempt yet | start attempt 1 | 06 |
 | 25 | 14 | Drain flag | gate: rows 22 to 24 start nothing; lower rows still apply | 03 |
+| 25 | N14 | Another attempt's unit (`gauge-run-*`) running | gate: rows 22 to 24 start nothing; lower rows still apply. M1 runs one attempt at a time because every box shares the one Claude sign-in, whose refresh two boxes would race (the known limit from agent-box PR A, de5eed5) | 06 |
 | 26 | 2 | PR open, `scorecard` not yet complete on the head | wait | 08 |
 | 27 | 6 | `scorecard` GREEN or AMBER on the head, PR open | wait for the owner | 08 |
 | 28 | 10 | Anything else | park `unrecognized_state`, observation attached | 03 |

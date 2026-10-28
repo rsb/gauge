@@ -7,7 +7,10 @@ use rsb_gauge_schema::Role;
 use serde::Serialize;
 
 use crate::ParkReason;
-use crate::store::{Agent, Flag, FlagKind, Loop, LoopId, LoopState, Request, RequestId, Snapshot};
+use crate::store::{
+    Agent, Attempt, AttemptEnd, Flag, FlagKind, IssuedBrief, Loop, LoopId, LoopState, Request,
+    RequestId, Snapshot,
+};
 use crate::vocabulary::vocabulary;
 
 /// One input to `decide`.
@@ -32,6 +35,9 @@ pub struct IssueObservation {
     pub paused: bool,
     /// A drain flag, global or on this loop.
     pub draining: bool,
+    /// A unit `gauge-run-*` other than this loop's current attempt's is
+    /// running.
+    pub another_running: bool,
     pub request: Option<RequestSeen>,
     /// The loop that is not closed, if any.
     pub run: Option<LoopSeen>,
@@ -108,6 +114,49 @@ pub struct LoopSeen {
     pub id: LoopId,
     pub state: LoopState,
     pub park: Option<ParkReason>,
+    /// The loop's current attempt: the highest number with a brief issued
+    /// or an attempt recorded. `None` before the first brief.
+    pub attempt: Option<AttemptSeen>,
+}
+
+/// An attempt's transient unit, `gauge-run-<loop>-<attempt>`, as systemd
+/// shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "unit", rename_all = "snake_case")]
+pub enum UnitSeen {
+    /// No unit of that name is loaded.
+    Absent,
+    /// Starting, running or stopping.
+    Running,
+    /// Exited with `code`; `None` when a signal ended it.
+    Exited { code: Option<i32> },
+}
+
+/// One attempt: its brief, its record, its unit and its outbox.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AttemptSeen {
+    pub number: u32,
+    /// `brief_issued` is recorded for it.
+    pub brief: bool,
+    /// The attempt record, once its unit has started.
+    pub recorded: Option<RecordedSeen>,
+    pub unit: UnitSeen,
+    /// `run/outbox/manifest.json` is on disk: the outbox is sealed.
+    pub sealed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecordedSeen {
+    /// The clock is at or past `started_at + runtime_bound`.
+    pub past_bound: bool,
+    pub end: Option<AttemptEnd>,
+}
+
+/// What the driver saw of a loop's current attempt outside the store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttemptWorld {
+    pub unit: UnitSeen,
+    pub sealed: bool,
 }
 
 /// The rows of one issue in a snapshot, before its role is looked up.
@@ -118,6 +167,9 @@ pub struct IssueRows {
     /// Pending, oldest first.
     pub requests: Vec<Request>,
     pub run: Option<Loop>,
+    /// The loop's attempts and briefs, by number.
+    pub attempts: Vec<Attempt>,
+    pub briefs: Vec<IssuedBrief>,
 }
 
 impl IssueRows {
@@ -126,13 +178,35 @@ impl IssueRows {
         !self.requests.is_empty()
     }
 
+    /// The loop's current attempt number, if a brief or an attempt exists.
+    pub fn current(&self) -> Option<u32> {
+        let attempts = self.attempts.iter().map(|a| a.started.number);
+        let briefs = self.briefs.iter().map(|b| b.attempt);
+        attempts.chain(briefs).max()
+    }
+
+    /// The recorded attempt numbered `number`.
+    pub fn attempt(&self, number: u32) -> Option<&Attempt> {
+        self.attempts.iter().find(|a| a.started.number == number)
+    }
+
+    /// The brief issued for attempt `number`.
+    pub fn brief(&self, number: u32) -> Option<&IssuedBrief> {
+        self.briefs.iter().find(|b| b.attempt == number)
+    }
+
     /// The observation of this issue under `flags`, with `role` from
-    /// `repos.toml` and `world` from GitHub.
+    /// `repos.toml`, `world` from GitHub, and `attempt` what the driver saw
+    /// of the current attempt's unit and outbox, and `another_running`
+    /// whether a unit of any other attempt runs, at `now`.
     pub fn observe(
         &self,
         flags: &[Flag],
         role: Option<Role>,
         world: Option<WorldSeen>,
+        attempt: Option<AttemptWorld>,
+        another_running: bool,
+        now: i64,
     ) -> Observation {
         let flagged = |kind| {
             flags.iter().any(|f| {
@@ -154,11 +228,31 @@ impl IssueRows {
             issue: self.issue,
             paused: flagged(FlagKind::Pause),
             draining: flagged(FlagKind::Drain),
+            another_running,
             request,
             run: self.run.as_ref().map(|run| LoopSeen {
                 id: run.id,
                 state: run.state,
                 park: run.park,
+                attempt: self.current().map(|number| {
+                    let seen = attempt.unwrap_or(AttemptWorld {
+                        unit: UnitSeen::Absent,
+                        sealed: false,
+                    });
+                    AttemptSeen {
+                        number,
+                        brief: self.brief(number).is_some(),
+                        recorded: self.attempt(number).map(|a| RecordedSeen {
+                            past_bound: now
+                                >= a.started.started_at.saturating_add(
+                                    i64::try_from(a.started.runtime_bound).unwrap_or(i64::MAX),
+                                ),
+                            end: a.end.clone(),
+                        }),
+                        unit: seen.unit,
+                        sealed: seen.sealed,
+                    }
+                }),
             }),
         })
     }
@@ -180,6 +274,8 @@ pub fn issues(snapshot: &Snapshot) -> Vec<IssueRows> {
                 issue,
                 requests: Vec::new(),
                 run: None,
+                attempts: Vec::new(),
+                briefs: Vec::new(),
             })
     }
     for run in snapshot
@@ -197,6 +293,20 @@ pub fn issues(snapshot: &Snapshot) -> Vec<IssueRows> {
     let mut out: Vec<IssueRows> = by_issue.into_values().collect();
     for rows in &mut out {
         rows.requests.sort_by_key(|r| r.id);
+        if let Some(id) = rows.run.as_ref().map(|r| r.id) {
+            rows.attempts = snapshot
+                .attempts
+                .iter()
+                .filter(|a| a.loop_id == id)
+                .cloned()
+                .collect();
+            rows.briefs = snapshot
+                .briefs
+                .iter()
+                .filter(|b| b.loop_id == id)
+                .cloned()
+                .collect();
+        }
     }
     out
 }
