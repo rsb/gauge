@@ -50,11 +50,11 @@ requirement 1).
 - Rows N6 (start attempt 1, gated by drain), 1 (running, wait), N2
   (past the runtime bound: stop the unit).
 - Brief v1 written by the driver from observed state: repo, base sha,
-  branch, ticket file path, spec id, the issue numbers for `Refs #n`
-  and `Closes #n` (record 1 §3: the brief carries them, ticket files
-  carry none), attempt number, kind `fresh`, outbox path, runtime
-  bound, and `allowed_effects` computed from the role in code (coder:
-  `pr-open`, `issue-comment`, `criteria-tick`, `deviation`,
+  base branch, branch, ticket file path, spec id, the issue numbers
+  for `Refs #n` and `Closes #n` (record 1 §3: the brief carries them,
+  ticket files carry none), attempt number, kind `fresh`, outbox path,
+  runtime bound, and `allowed_effects` computed from the role in code
+  (coder: `pr-open`, `issue-comment`, `criteria-tick`, `deviation`,
   `flagged-for-human`, `blocked`; effects record §7). Its targets
   (issue numbers, branch) are the allowed targets. No GitHub
   credential, no store credential, nothing the agent could use to
