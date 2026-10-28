@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 /// One engineering rule, as its TOML file states it.
 ///
 /// Enforcement is derived from [`Consequence`] and [`Lifecycle`], never
-/// stated: a trial rule only reports; an enforced business finding blocks;
-/// an enforced coherence finding accrues debt and never blocks. This crate
-/// holds no verdict logic.
+/// stated: a trial rule only reports; an enforced business or containment
+/// finding blocks; an enforced coherence finding accrues debt and never
+/// blocks. This crate holds no verdict logic.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
@@ -126,12 +126,19 @@ impl CheckClass {
     }
 }
 
-/// What a rule costs when it does not hold. Business: the user experiences
-/// it. Coherence: the system is less like itself.
+/// What a rule costs when it does not hold. A trial rule only reports,
+/// whatever its class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Consequence {
+    /// A violation changes what a user experiences. Enforced findings block.
     Business,
+    /// A violation weakens the sandbox or the repo's security: governance
+    /// files, CI permissions, secrets. Enforced findings block and never
+    /// become debt.
+    Containment,
+    /// A violation breaks architecture or a convention without changing
+    /// behaviour. Enforced findings never block; they accrue debt.
     Coherence,
 }
 
@@ -282,6 +289,38 @@ since = "2026-10-28"
     }
 
     #[test]
+    fn a_containment_rule_parses() {
+        let text = RL_0001.replace(
+            "consequence = \"coherence\"",
+            "consequence = \"containment\"",
+        );
+        let rule: Rule = toml::from_str(&text).expect("a containment rule parses");
+        assert_eq!(rule.consequence, Consequence::Containment);
+    }
+
+    #[test]
+    fn an_unknown_consequence_is_refused() {
+        let text = RL_0001.replace("consequence = \"coherence\"", "consequence = \"security\"");
+        let err = toml::from_str::<Rule>(&text).expect_err("an unknown consequence");
+        assert!(err.to_string().contains("security"), "{err}");
+    }
+
+    #[test]
+    fn the_schema_names_the_three_consequences() {
+        let rule = schemars::schema_for!(Rule);
+        let values: Vec<&str> = rule
+            .get("$defs")
+            .and_then(|defs| defs.get("Consequence"))
+            .and_then(|c| c.get("oneOf"))
+            .and_then(|v| v.as_array())
+            .expect("the rule schema defines Consequence as oneOf")
+            .iter()
+            .filter_map(|v| v.get("const").and_then(|c| c.as_str()))
+            .collect();
+        assert_eq!(values, ["business", "containment", "coherence"]);
+    }
+
+    #[test]
     fn the_fields_v2_removed_are_refused() {
         // Before the first table header, so the key is the rule's, not a table's.
         for removed in ["default_level = \"error\"", "severity = \"high\""] {
@@ -332,6 +371,7 @@ since = "2026-10-28"
             "approximate",
             "judgement",
             "business",
+            "containment",
             "coherence",
             "source",
             "retired",
