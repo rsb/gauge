@@ -49,8 +49,10 @@ post it until M2; R1 declined: the Codex adapter stays at M4).
   `run` on the epic (M5). The table is shaped so the epic row is one
   addition.
 - Cross-review as a sensor row (after the cross-review session).
-- Local SQLite cache (**proposal**: Postgres only at M1; store
-  unreachable means no action, D5).
+- A shared store. At M1 the store is a SQLite file on the desktop;
+  the shared Cloudflare store (SQLite in Durable Objects or D1) comes
+  at M5 with its own design session (D5 as revised 2026-10-28; ticket
+  2).
 - JSONL export of history into git (**proposal**: store only at M1;
   Q19 stays open).
 - Insights. No empty `insights` package is created (**proposal**).
@@ -77,7 +79,7 @@ owner steps and hold their dependents at wait.
 | Ticket | Slice | Depends on |
 |---|---|---|
 | 01 Workspace restructure and custody boundary | groundwork | — |
-| 02 Shared store reachable from the desktop | human | — |
+| 02 Store location on the desktop | human | — |
 | 03 A run request becomes an open loop | feature | 01, 02 |
 | 04 Factory App installed on the reference repo | human | — |
 | 05 The world observed: label in, ineligible repos refused | feature | 03, 04 |
@@ -98,7 +100,7 @@ producer, `relies_on` on the consumer). Summary:
 | Edge | What crosses it |
 |---|---|
 | 01 → 03 | The `gauge` workspace restructured (`rsb-gauge-schema`, `rsb-gauge-cli`, `agent-driver` folded in); the custody table in `xtask layers` green and kept green |
-| 02 → 03 | A store URL and credential on the desktop, outside every repo, for a role that can migrate the `gauge` schema only |
+| 02 → 03 | The store directory `~/.local/state/gauge/` on the desktop, outside every repo and every box mount; the store file is passed as `GAUGE_STORE` |
 | 03 → 05 | Observation, Situation, Action types; pure `decide` with first-match precedence; tick skeleton with per-loop boundary; event log with cursor; the store ports and their fakes; the kill harness |
 | 04 → 05 | App id, installation on the reference repo, private key path on the desktop readable by `agent-driver` only |
 | 05 → 06 | GitHub port with fake; observed issue and lockfile state; eligible open loops |
@@ -236,8 +238,8 @@ finding fingerprints, the tree hash stays.
   refused (PRD 7.1 addition).
 - `agent-driver`: four ports (store, GitHub, process launcher, clock)
   with in-memory fakes. A fake agent adapter that writes a scripted
-  commit and outbox. Postgres in a container for store tests, never
-  the shared store.
+  commit and outbox. A SQLite store in a temporary file for store tests, never
+  the live store file.
 - The kill harness (from 03): drives a scripted world through ticks
   with the fakes, kills at a seeded random point between any two port
   calls, restarts from the store and the fake world, and asserts the

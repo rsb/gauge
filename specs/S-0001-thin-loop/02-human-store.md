@@ -1,37 +1,47 @@
 ---
 id: S-0001/2
-title: Shared store reachable from the desktop
+title: Store location on the desktop
 slice: human
 depends_on: []
-serves: [gauge §2.5, D5]
+serves: [gauge §2.5, D5 as revised 2026-10-28]
 contracts:
   provides:
     - to: S-0001/3
       shape: >
-        The separate Supabase project from D5, reachable from the
-        desktop. A connection URL and credential stored outside every
-        repo, for a role that owns the `gauge` schema and nothing else;
-        no Supabase API role has grants on it. The location of the
-        credential file is written in the owner runbook.
+        A directory on the desktop for the store's SQLite files, outside
+        every repo and never mounted into agent-box:
+        `~/.local/state/gauge/`, mode 700. The live store is
+        `~/.local/state/gauge/live.sqlite`; dev stores are any other
+        file the owner names. The path is passed to the driver and CLI
+        through `GAUGE_STORE`; nothing defaults to it.
   relies_on: []
 seams: []
 ---
 
-# Shared store reachable from the desktop (owner)
+# Store location on the desktop (owner)
+
+## Decision (owner, 2026-10-28)
+
+At M1 the store is a SQLite file on the desktop. M1 is one machine and
+one tick, so nothing needs to be shared yet. SQLite is the store's
+long-term dialect: at M5, when two machines, leases and the phone need a
+shared store, it moves behind the Worker into Cloudflare (Durable
+Objects or D1, both SQLite) in the owner's personal paid account, never
+the gordana-milan account. The schema and queries written now carry
+over; only what surrounds them changes. That M5 move gets its own
+design session. This revises D5: no Supabase project is created for
+Gauge.
 
 ## Steps
 
-- Stand up or confirm the separate Supabase project (D5), never an
-  application's database, from the existing runbooks.
-- Create the `gauge` schema and a role that owns it; no grants to the
-  API roles; Data API off (as gordana-milan's 0001).
-- Put the URL and credential where `agent-driver` and `gauge` read
-  them on the desktop; never in a repo, never mounted into agent-box.
-- Note the steps in the runbook so the laptop can repeat them at M5.
+- Create `~/.local/state/gauge/` with mode 700.
+- Confirm agent-box mounts nothing at or above it (search agent-box and
+  agent-host for `.local`).
+- Record the path in the runbook (`gauge/runbooks/store.md`, prose, no
+  secrets) together with the decision above.
 
 ## Criteria
 
-- [ ] `psql` as the role from the desktop connects and can create a
-      table in `gauge` and not in `public`.
-- [ ] The credential path is outside every checkout and is not in
-      agent-box's mounts.
+- [ ] `~/.local/state/gauge/` exists with mode 700 and is outside every
+      checkout.
+- [ ] Nothing in agent-box or agent-host mounts it or a parent of it.
