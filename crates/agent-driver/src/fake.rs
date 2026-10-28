@@ -5,6 +5,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use rsb_gauge_reconcile::UnitSeen;
+use rsb_gauge_reconcile::adapter::RunOutput;
+use rsb_gauge_reconcile::store::{LoopId, SkillsSource};
+
+use crate::attempt::{Attempts, Launch, Workspace};
 use crate::error::Error;
 use crate::git;
 use crate::world::{Branch, Entry, EntryKind, GitHub, IssueSeen, LOCKFILE, Labelled};
@@ -238,6 +243,140 @@ impl GitHub for FakeGitHub {
             .as_ref()
             .ok_or_else(|| Error::Failed(format!("fake repo {repo} has no bare repository")))?;
         git::fetch_at(&format!("file://{}", bare.display()), sha, into, None)
+    }
+}
+
+/// The ticket every fake workspace's clone holds: a feature, so its branch
+/// is `feat/<issue>-<slug>`.
+pub const FAKE_TICKET: &str = "---\nid: S-0001/1\nslice: feature\n---\n\n# The first ticket\n";
+
+/// The skills source every fake attempt records.
+pub fn fake_skills() -> SkillsSource {
+    SkillsSource {
+        commit: "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed".to_owned(),
+        clean: true,
+    }
+}
+
+/// The attempts port in memory: units by name, scripted as running, exited
+/// or gone; workspaces by directory, holding the brief written and whether
+/// the outbox is sealed. Every start is kept, refused ones too, so a test
+/// can count them per unit name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeAttempts {
+    pub units: BTreeMap<String, UnitSeen>,
+    /// Every `start` call, in order.
+    pub starts: Vec<Launch>,
+    pub stops: Vec<String>,
+    /// `run/brief.json` per attempt directory, as last written.
+    pub briefs: BTreeMap<PathBuf, serde_json::Value>,
+    /// The branch each workspace was prepared on.
+    pub branches: BTreeMap<PathBuf, String>,
+    pub sealed: BTreeSet<PathBuf>,
+    /// What each run left; an empty output when none is scripted.
+    pub outputs: BTreeMap<PathBuf, RunOutput>,
+    pub ticket: Option<String>,
+}
+
+impl Default for FakeAttempts {
+    fn default() -> Self {
+        Self {
+            units: BTreeMap::new(),
+            starts: Vec::new(),
+            stops: Vec::new(),
+            briefs: BTreeMap::new(),
+            branches: BTreeMap::new(),
+            sealed: BTreeSet::new(),
+            outputs: BTreeMap::new(),
+            ticket: Some(FAKE_TICKET.to_owned()),
+        }
+    }
+}
+
+impl FakeAttempts {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The unit `name` now shows as `seen`.
+    pub fn set(&mut self, name: &str, seen: UnitSeen) {
+        self.units.insert(name.to_owned(), seen);
+    }
+
+    /// Seals the outbox of the attempt in `dir`.
+    pub fn seal(&mut self, dir: &Path) {
+        self.sealed.insert(dir.to_path_buf());
+    }
+}
+
+impl Attempts for FakeAttempts {
+    fn dir(&self, loop_id: LoopId, attempt: u32) -> PathBuf {
+        PathBuf::from(format!("/fake/runs/{loop_id}/{attempt}"))
+    }
+
+    fn unit(&mut self, name: &str) -> Result<UnitSeen, Error> {
+        Ok(self.units.get(name).copied().unwrap_or(UnitSeen::Absent))
+    }
+
+    fn start(&mut self, launch: &Launch) -> Result<(), Error> {
+        self.starts.push(launch.clone());
+        if self.unit(&launch.unit)? != UnitSeen::Absent {
+            return Err(Error::Command {
+                what: "systemd-run".to_owned(),
+                status: Some(1),
+                stderr: format!("Unit {}.service was already loaded", launch.unit),
+            });
+        }
+        self.set(&launch.unit, UnitSeen::Running);
+        Ok(())
+    }
+
+    fn stop(&mut self, name: &str) -> Result<(), Error> {
+        self.stops.push(name.to_owned());
+        self.units.remove(name);
+        Ok(())
+    }
+
+    fn ticket(
+        &mut self,
+        _github: &mut dyn GitHub,
+        _dir: &Path,
+        _ws: &Workspace<'_>,
+    ) -> Result<Option<String>, Error> {
+        Ok(self.ticket.clone())
+    }
+
+    fn prepare(
+        &mut self,
+        _github: &mut dyn GitHub,
+        dir: &Path,
+        _ws: &Workspace<'_>,
+        branch: &str,
+        brief: &serde_json::Value,
+    ) -> Result<(), Error> {
+        self.branches.insert(dir.to_path_buf(), branch.to_owned());
+        self.briefs.insert(dir.to_path_buf(), brief.clone());
+        Ok(())
+    }
+
+    fn sealed(&mut self, dir: &Path) -> Result<bool, Error> {
+        Ok(self.sealed.contains(dir))
+    }
+
+    fn output(
+        &mut self,
+        dir: &Path,
+        _base_sha: &str,
+        _branch: &str,
+        exit: Option<i32>,
+    ) -> Result<RunOutput, Error> {
+        let mut output = self.outputs.get(dir).cloned().unwrap_or_default();
+        output.exit = exit;
+        Ok(output)
+    }
+
+    fn skills(&mut self, _checkout: &Path) -> Result<SkillsSource, Error> {
+        Ok(fake_skills())
     }
 }
 

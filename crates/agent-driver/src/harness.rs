@@ -4,19 +4,23 @@
 //! world alone; and the end state must equal the run with no kill, with no
 //! event repeated. Later tickets add their rows' scenarios to [`scenarios`].
 
-use std::cell::Cell;
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 
+use rsb_gauge_reconcile::adapter::RunOutput;
 use rsb_gauge_reconcile::store::{
-    Agent, Applied, Event, EventKind, Flag, FlagKind, LabelKey, Loop, LoopId, LoopState,
-    NewRequest, RequestId, Snapshot, Store, Write,
+    Agent, Applied, AttemptCause, Event, EventKind, Flag, FlagKind, LabelKey, Loop, LoopId,
+    LoopState, NewRequest, RequestId, SkillsSource, Snapshot, Store, Write,
 };
-use rsb_gauge_reconcile::{Action, MemoryStore, ParkReason, Refusal, Situation, TicketCause};
+use rsb_gauge_reconcile::{
+    Action, MemoryStore, ParkReason, Refusal, Situation, TicketCause, UnitSeen,
+};
 use rsb_gauge_schema::Repos;
 use rsb_gauge_store::SqliteStore;
 
+use crate::attempt::{Attempts, Launch, Settings, Workspace};
 use crate::error::Error;
-use crate::fake::{FakeGitHub, SHA};
+use crate::fake::{FakeAttempts, FakeGitHub, SHA};
 use crate::registry::{Registry, Source};
 use crate::tick::{self, Clock, Mode, Outcome, Poll, Polled, Report};
 use crate::world::{self, Branch, Entry, GitHub, IssueSeen, LABEL, Labelled};
@@ -28,6 +32,15 @@ struct FixedClock;
 impl Clock for FixedClock {
     fn now(&self) -> i64 {
         NOW
+    }
+}
+
+/// A clock set by the script, for the runtime bound.
+struct At(i64);
+
+impl Clock for At {
+    fn now(&self) -> i64 {
+        self.0
     }
 }
 
@@ -91,11 +104,43 @@ fn registry() -> Result<Registry, String> {
 const TICKET: &str = "specs/S-0001-thin-loop/01-first-ticket.md";
 const MARKER: &str = "<!-- rsb-ticket S-0001/1 -->\n\n# The first ticket\n";
 
-/// The fake world: the reference repo and `lumen` minted, with the lockfile
+/// Everything outside the store a tick sees: GitHub, the attempts' units
+/// and workspaces, the clock, and the driver's attempt settings.
+#[derive(Clone)]
+struct World {
+    github: FakeGitHub,
+    attempts: FakeAttempts,
+    now: i64,
+    settings: Result<Settings, String>,
+}
+
+impl std::ops::Deref for World {
+    type Target = FakeGitHub;
+    fn deref(&self) -> &FakeGitHub {
+        &self.github
+    }
+}
+
+impl std::ops::DerefMut for World {
+    fn deref_mut(&mut self) -> &mut FakeGitHub {
+        &mut self.github
+    }
+}
+
+fn world() -> World {
+    World {
+        github: github(),
+        attempts: FakeAttempts::new(),
+        now: NOW,
+        settings: Ok(crate::attempt::tests::settings()),
+    }
+}
+
+/// The fake GitHub: the reference repo and `lumen` minted, with the lockfile
 /// and the ticket file; `libraw` eligible by role but with no lockfile; and
 /// `gordana-milan`, `gauge` and `research` not reached. Issues 1 to 20 name
 /// the ticket, but the reference repo's issue 13 names none.
-fn world() -> FakeGitHub {
+fn github() -> FakeGitHub {
     let issues = |mut r: crate::fake::FakeRepo| {
         for n in 1..=20 {
             r = r.issue(n, MARKER);
@@ -128,8 +173,46 @@ fn tick(store: &mut impl Store, mode: Mode) -> Report {
     tick_in(store, &mut world(), mode)
 }
 
-fn tick_in(store: &mut impl Store, github: &mut impl GitHub, mode: Mode) -> Report {
-    tick::run(store, github, &registry(), &FixedClock, mode).unwrap()
+fn tick_in(store: &mut impl Store, world: &mut World, mode: Mode) -> Report {
+    tick::run(
+        store,
+        &mut world.github,
+        &mut world.attempts,
+        &registry(),
+        &world.settings,
+        &At(world.now),
+        mode,
+    )
+    .unwrap()
+}
+
+/// A gated tick's result, whether it was killed, and its calls by name.
+type Gated<E> = (Result<Report, Killed<E>>, bool, Vec<&'static str>);
+
+/// One tick behind a gate that kills at call `kill_at`. Returns the tick's
+/// result, whether it was killed, and every port call it made, by name.
+fn gated<S: Store>(store: &mut S, world: &mut World, kill_at: Option<usize>) -> Gated<S::Error> {
+    let gate = Gate::new(kill_at);
+    let result = tick::run(
+        &mut Killable {
+            inner: store,
+            gate: &gate,
+        },
+        &mut KillableGitHub {
+            inner: &mut world.github,
+            gate: &gate,
+        },
+        &mut KillableAttempts {
+            inner: &mut world.attempts,
+            gate: &gate,
+        },
+        &registry(),
+        &world.settings,
+        &At(world.now),
+        Mode::Act,
+    );
+    let killed = gate.killed();
+    (result, killed, gate.log.into_inner())
 }
 
 fn events(store: &impl Store) -> Vec<Event> {
@@ -175,6 +258,8 @@ fn end_state(store: &impl Store) -> (Vec<Loop>, Vec<String>, Snapshot) {
 struct Gate {
     calls: Cell<usize>,
     kill_at: Option<usize>,
+    /// Every call by name, so a named kill point can be found.
+    log: RefCell<Vec<&'static str>>,
 }
 
 impl Gate {
@@ -182,12 +267,14 @@ impl Gate {
         Self {
             calls: Cell::new(0),
             kill_at,
+            log: RefCell::new(Vec::new()),
         }
     }
 
-    fn pass(&self) -> bool {
+    fn pass(&self, what: &'static str) -> bool {
         let n = self.calls.get();
         self.calls.set(n + 1);
+        self.log.borrow_mut().push(what);
         !self.kill_at.is_some_and(|k| n >= k)
     }
 
@@ -212,7 +299,7 @@ enum Killed<E: std::error::Error + 'static> {
 
 impl<S: Store> Killable<'_, S> {
     fn gate(&self) -> Result<(), Killed<S::Error>> {
-        if self.gate.pass() {
+        if self.gate.pass("store") {
             Ok(())
         } else {
             Err(Killed::Killed)
@@ -289,7 +376,7 @@ struct KillableGitHub<'a, G> {
 
 impl<G: GitHub> KillableGitHub<'_, G> {
     fn gate(&self) -> Result<(), Error> {
-        if self.gate.pass() {
+        if self.gate.pass("github") {
             Ok(())
         } else {
             Err(Error::Failed("killed".to_owned()))
@@ -333,6 +420,86 @@ impl<G: GitHub> GitHub for KillableGitHub<'_, G> {
     }
 }
 
+/// The attempts port behind the same gate.
+struct KillableAttempts<'a, A> {
+    inner: &'a mut A,
+    gate: &'a Gate,
+}
+
+impl<A: Attempts> KillableAttempts<'_, A> {
+    fn gate(&self, what: &'static str) -> Result<(), Error> {
+        if self.gate.pass(what) {
+            Ok(())
+        } else {
+            Err(Error::Failed("killed".to_owned()))
+        }
+    }
+}
+
+impl<A: Attempts> Attempts for KillableAttempts<'_, A> {
+    fn dir(&self, loop_id: LoopId, attempt: u32) -> PathBuf {
+        self.inner.dir(loop_id, attempt)
+    }
+
+    fn unit(&mut self, name: &str) -> Result<UnitSeen, Error> {
+        self.gate("unit")?;
+        self.inner.unit(name)
+    }
+
+    fn start(&mut self, launch: &Launch) -> Result<(), Error> {
+        self.gate("start")?;
+        self.inner.start(launch)
+    }
+
+    fn stop(&mut self, name: &str) -> Result<(), Error> {
+        self.gate("stop")?;
+        self.inner.stop(name)
+    }
+
+    fn ticket(
+        &mut self,
+        github: &mut dyn GitHub,
+        dir: &Path,
+        ws: &Workspace<'_>,
+    ) -> Result<Option<String>, Error> {
+        self.gate("ticket")?;
+        self.inner.ticket(github, dir, ws)
+    }
+
+    fn prepare(
+        &mut self,
+        github: &mut dyn GitHub,
+        dir: &Path,
+        ws: &Workspace<'_>,
+        branch: &str,
+        brief: &serde_json::Value,
+    ) -> Result<(), Error> {
+        self.gate("prepare")?;
+        self.inner.prepare(github, dir, ws, branch, brief)
+    }
+
+    fn sealed(&mut self, dir: &Path) -> Result<bool, Error> {
+        self.gate("sealed")?;
+        self.inner.sealed(dir)
+    }
+
+    fn output(
+        &mut self,
+        dir: &Path,
+        base_sha: &str,
+        branch: &str,
+        exit: Option<i32>,
+    ) -> Result<RunOutput, Error> {
+        self.gate("output")?;
+        self.inner.output(dir, base_sha, branch, exit)
+    }
+
+    fn skills(&mut self, checkout: &Path) -> Result<SkillsSource, Error> {
+        self.gate("skills")?;
+        self.inner.skills(checkout)
+    }
+}
+
 /// A seeded xorshift, so a failing seed replays exactly.
 struct Seeded(u64);
 
@@ -353,6 +520,12 @@ enum Step {
     Label(&'static str, u64),
     Unlabel(&'static str, u64),
     Pause(Option<i64>),
+    /// The unit exits with a code, or on a signal.
+    Exit(&'static str, Option<i32>),
+    /// The attempt (loop, number) seals its outbox.
+    Seal(i64, u32),
+    /// The clock moves on, in seconds.
+    Advance(i64),
     Tick,
 }
 
@@ -361,7 +534,7 @@ fn scenarios() -> Vec<(&'static str, Vec<Step>)> {
     use Step::*;
     vec![
         (
-            "an eligible request opens one loop, which then parks unrecognized",
+            "an eligible request opens one loop, which then starts its first attempt",
             vec![Ask("ref-rsb-serverless-stack", 7), Tick, Tick, Tick],
         ),
         (
@@ -434,20 +607,59 @@ fn scenarios() -> Vec<(&'static str, Vec<Step>)> {
                 Tick,
             ],
         ),
+        (
+            "a loop opens, its attempt starts, and the unit exits non-zero",
+            vec![
+                Ask("ref-rsb-serverless-stack", 7),
+                Tick,
+                Tick,
+                Tick,
+                Exit("gauge-run-1-1", Some(3)),
+                Tick,
+                Tick,
+            ],
+        ),
+        (
+            "an attempt that runs past its bound is stopped as timed out",
+            vec![
+                Label("lumen", 3),
+                Tick,
+                Tick,
+                Advance(1800),
+                Tick,
+                Advance(1800),
+                Tick,
+                Tick,
+            ],
+        ),
+        (
+            "two loops' attempts: one seals its outbox and exits zero, one is killed",
+            vec![
+                Ask("lumen", 4),
+                Ask("ref-rsb-serverless-stack", 4),
+                Tick,
+                Tick,
+                Seal(1, 1),
+                Exit("gauge-run-1-1", Some(0)),
+                Exit("gauge-run-2-1", None),
+                Tick,
+                Tick,
+            ],
+        ),
     ]
 }
 
 /// Runs a script against a fresh [`world`]. At each tick, `kills` picks the
 /// port call to die at, or none; a killed tick is restarted until one
 /// completes, as systemd would. Settling ticks after the script let both runs
-/// reach rest. Returns how many ticks were killed, and how many port calls
-/// each script tick made in the run that completed.
+/// reach rest. Returns how many ticks were killed, how many port calls each
+/// script tick made in the run that completed, and the world at the end.
 fn play<S: Store>(
     store: &mut S,
     script: &[Step],
     mut kills: impl FnMut() -> Option<usize>,
-) -> (usize, Vec<usize>) {
-    let mut github = world();
+) -> (usize, Vec<usize>, World) {
+    let mut world = world();
     let mut killed = 0;
     let mut calls = Vec::new();
     for step in script {
@@ -456,10 +668,10 @@ fn play<S: Store>(
                 ask(store, repo, issue);
             }
             Step::Label(repo, issue) => {
-                github.label(repo, issue, LABEL);
+                world.label(repo, issue, LABEL);
             }
             Step::Unlabel(repo, issue) => {
-                github.unlabel(repo, issue, LABEL);
+                world.unlabel(repo, issue, LABEL);
             }
             Step::Pause(scope) => {
                 store
@@ -472,27 +684,18 @@ fn play<S: Store>(
                     )
                     .unwrap();
             }
+            Step::Exit(unit, code) => world.attempts.set(unit, UnitSeen::Exited { code }),
+            Step::Seal(loop_id, attempt) => {
+                let dir = world.attempts.dir(LoopId(loop_id), attempt);
+                world.attempts.seal(&dir);
+            }
+            Step::Advance(seconds) => world.now += seconds,
             Step::Tick => loop {
-                let gate = Gate::new(kills());
-                let mut killable = Killable {
-                    inner: store,
-                    gate: &gate,
-                };
-                let mut github = KillableGitHub {
-                    inner: &mut github,
-                    gate: &gate,
-                };
-                let result = tick::run(
-                    &mut killable,
-                    &mut github,
-                    &registry(),
-                    &FixedClock,
-                    Mode::Act,
-                );
-                if !gate.killed() {
+                let (result, was_killed, log) = gated(store, &mut world, kills());
+                if !was_killed {
                     let report = result.unwrap();
                     assert_eq!(report.failed, 0, "{report:?}");
-                    calls.push(gate.calls.get());
+                    calls.push(log.len());
                     break;
                 }
                 killed += 1;
@@ -500,9 +703,65 @@ fn play<S: Store>(
         }
     }
     for _ in 0..3 {
-        tick_in(store, &mut github, Mode::Act);
+        tick_in(store, &mut world, Mode::Act);
     }
-    (killed, calls)
+    (killed, calls, world)
+}
+
+/// What the attempts port holds at the end: units, starts by name, stops,
+/// briefs written. A kill never starts or stops a unit twice, so the lists
+/// match the run with no kill.
+type AttemptsState = (
+    Vec<(String, UnitSeen)>,
+    Vec<String>,
+    Vec<String>,
+    Vec<(PathBuf, serde_json::Value)>,
+);
+
+fn attempts_state(world: &World) -> AttemptsState {
+    let a = &world.attempts;
+    let mut starts: Vec<String> = a.starts.iter().map(|l| l.unit.clone()).collect();
+    starts.sort();
+    let mut stops = a.stops.clone();
+    stops.sort();
+    (
+        a.units.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        starts,
+        stops,
+        a.briefs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
+}
+
+/// Exactly one start per unit name, ever, and `brief_issued` recorded for
+/// every unit started.
+fn one_start_per_unit_each_briefed(store: &impl Store, world: &World, what: &str) {
+    let mut names: Vec<&str> = world
+        .attempts
+        .starts
+        .iter()
+        .map(|l| l.unit.as_str())
+        .collect();
+    let all = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), all, "{what}: a unit started twice");
+    let events = events(store);
+    for name in names {
+        assert!(
+            events.iter().any(|e| e.kind == EventKind::BriefIssued
+                && e.loop_id
+                    .map(|id| rsb_gauge_reconcile::store::unit_name(
+                        id,
+                        e.payload["attempt"].as_u64().unwrap() as u32
+                    ))
+                    .as_deref()
+                    == Some(name)),
+            "{what}: {name} started with no brief_issued"
+        );
+    }
 }
 
 /// More port calls than any scripted tick makes, so a random kill can land
@@ -520,21 +779,29 @@ fn no_event_repeats(events: &[String]) {
 fn a_kill_at_any_point_reaches_the_same_end_state_on_the_fake() {
     for (name, script) in scenarios() {
         let mut clean = MemoryStore::new();
-        let (_, calls) = play(&mut clean, &script, || None);
+        let (_, calls, clean_world) = play(&mut clean, &script, || None);
         assert!(calls.iter().all(|&c| c < CALLS), "{name}: {calls:?}");
         let expected = end_state(&clean);
         no_event_repeats(&expected.1);
+        one_start_per_unit_each_briefed(&clean, &clean_world, name);
+        let expected_attempts = attempts_state(&clean_world);
         let mut killed = 0;
         for seed in 1..=200u64 {
             let mut rng = Seeded(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
             let mut store = MemoryStore::new();
-            killed += play(&mut store, &script, || {
+            let (n, _, world) = play(&mut store, &script, || {
                 // Die in about two ticks of three, at any port call; more
                 // calls than a tick makes is no kill.
                 (rng.below(3) != 0).then(|| rng.below(CALLS))
-            })
-            .0;
+            });
+            killed += n;
             assert_eq!(end_state(&store), expected, "{name}, seed {seed}");
+            assert_eq!(
+                attempts_state(&world),
+                expected_attempts,
+                "{name}, seed {seed}"
+            );
+            one_start_per_unit_each_briefed(&store, &world, name);
         }
         assert!(killed > 50, "{name}: only {killed} kills");
     }
@@ -546,9 +813,10 @@ fn every_single_kill_point_reaches_the_same_end_state_on_sqlite() {
     for (n, (name, script)) in scenarios().into_iter().enumerate() {
         let path = dir.path().join(format!("clean-{n}.sqlite"));
         let mut clean = SqliteStore::create(&path, Path::new("/registry/repos.toml")).unwrap();
-        let (_, calls) = play(&mut clean, &script, || None);
+        let (_, calls, clean_world) = play(&mut clean, &script, || None);
         let expected = end_state(&clean);
         no_event_repeats(&expected.1);
+        let expected_attempts = attempts_state(&clean_world);
         // Every call of every tick, and one past the last, which is no kill.
         for (tick_index, &made) in calls.iter().enumerate() {
             for point in 0..=made {
@@ -558,15 +826,14 @@ fn every_single_kill_point_reaches_the_same_end_state_on_sqlite() {
                 let mut store =
                     SqliteStore::create(&path, Path::new("/registry/repos.toml")).unwrap();
                 let mut seen = 0;
-                let (killed, _) = play(&mut store, &script, || {
+                let (killed, _, world) = play(&mut store, &script, || {
                     seen += 1;
                     (seen == tick_index + 1).then_some(point)
                 });
-                assert_eq!(
-                    end_state(&store),
-                    expected,
-                    "{name}, tick {tick_index}, killed at call {point}"
-                );
+                let what = format!("{name}, tick {tick_index}, killed at call {point}");
+                assert_eq!(end_state(&store), expected, "{what}");
+                assert_eq!(attempts_state(&world), expected_attempts, "{what}");
+                one_start_per_unit_each_briefed(&store, &world, &what);
                 assert_eq!(
                     killed,
                     usize::from(point < made),
@@ -640,9 +907,13 @@ fn a_factory_record_or_unlisted_repo_is_refused_with_a_reason_and_no_loop() {
 #[test]
 fn an_observation_matching_no_row_parks_with_the_observation_attached() {
     let mut store = MemoryStore::new();
+    let mut world = world();
     ask(&mut store, "lumen", 4);
-    tick(&mut store, Mode::Act);
-    let report = tick(&mut store, Mode::Act);
+    tick_in(&mut store, &mut world, Mode::Act);
+    tick_in(&mut store, &mut world, Mode::Act);
+    // The attempt's unit is gone with its end not recorded: no row matches.
+    world.attempts.units.clear();
+    let report = tick_in(&mut store, &mut world, Mode::Act);
     assert_eq!(
         report.lines[0].decision.map(|d| d.situation),
         Some(Situation::Unrecognized)
@@ -659,7 +930,7 @@ fn an_observation_matching_no_row_parks_with_the_observation_attached() {
     assert_eq!(run.park, Some(ParkReason::UnrecognizedState));
     // Parked again by the next tick, it is the same park: no second event.
     let before = events(&store).len();
-    tick(&mut store, Mode::Act);
+    tick_in(&mut store, &mut world, Mode::Act);
     assert_eq!(events(&store).len(), before);
 }
 
@@ -852,7 +1123,17 @@ fn an_unreadable_registry_fails_only_the_issues_that_need_it() {
     tick(&mut store, Mode::Act);
     ask(&mut store, "lumen", 2);
     let broken: Result<Registry, String> = Err("cannot read /registry/repos.toml".into());
-    let report = tick::run(&mut store, &mut world(), &broken, &FixedClock, Mode::Act).unwrap();
+    let mut w = world();
+    let report = tick::run(
+        &mut store,
+        &mut w.github,
+        &mut w.attempts,
+        &broken,
+        &w.settings,
+        &FixedClock,
+        Mode::Act,
+    )
+    .unwrap();
     // The poll, and the one issue that needs a role.
     assert_eq!(report.failed, 2);
     assert!(matches!(
@@ -861,15 +1142,16 @@ fn an_unreadable_registry_fails_only_the_issues_that_need_it() {
     ));
     let failed = report.lines.iter().find(|l| l.issue == 2).unwrap();
     assert!(matches!(&failed.outcome, Outcome::Failed(m) if m.contains("repos.toml")));
-    let parked = report.lines.iter().find(|l| l.issue == 1).unwrap();
+    // The open loop needs no role: its first attempt starts.
+    let started = report.lines.iter().find(|l| l.issue == 1).unwrap();
     assert!(matches!(
-        parked.outcome,
+        started.outcome,
         Outcome::Applied(Applied::Recorded(_))
     ));
     assert!(
         events(&store)
             .iter()
-            .any(|e| e.kind == EventKind::LoopParked && e.issue == Some(1))
+            .any(|e| e.kind == EventKind::AttemptStarted && e.issue == Some(1))
     );
     assert!(
         events(&store)
@@ -939,21 +1221,8 @@ fn a_tick_killed_after_the_label_request_is_inserted_inserts_no_second() {
     github.label(REF, 5, LABEL);
     // Calls: 0 polls the reference repo, 1 inserts its request, 2 polls
     // lumen. Die there, after the insert and before the snapshot.
-    let gate = Gate::new(Some(2));
-    let result = tick::run(
-        &mut Killable {
-            inner: &mut store,
-            gate: &gate,
-        },
-        &mut KillableGitHub {
-            inner: &mut github,
-            gate: &gate,
-        },
-        &registry(),
-        &FixedClock,
-        Mode::Act,
-    );
-    assert!(gate.killed() && result.is_err());
+    let (result, killed, _) = gated(&mut store, &mut github, Some(2));
+    assert!(killed && result.is_err());
     let pending = store.snapshot().unwrap().requests;
     assert_eq!(pending.len(), 1);
     assert!(store.loops().unwrap().is_empty());
@@ -1151,4 +1420,337 @@ fn no_event_payload_carries_anything_token_shaped() {
             assert!(!text.contains(shape), "{shape} in {text}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The criteria of ticket 06.
+
+fn of_kind(store: &impl Store, kind: EventKind) -> Vec<Event> {
+    events(store)
+        .into_iter()
+        .filter(|e| e.kind == kind)
+        .collect()
+}
+
+/// A loop opened on `REF#5`, with no attempt yet.
+fn opened_loop() -> (MemoryStore, World) {
+    let mut store = MemoryStore::new();
+    let mut world = world();
+    ask(&mut store, REF, 5);
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(store.loops().unwrap().len(), 1);
+    (store, world)
+}
+
+/// The loop's attempt, started at `NOW`.
+fn started_attempt() -> (MemoryStore, World) {
+    let (mut store, mut world) = opened_loop();
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(store.snapshot().unwrap().attempts.len(), 1);
+    (store, world)
+}
+
+const UNIT: &str = "gauge-run-1-1";
+
+#[test]
+fn the_next_tick_after_a_loop_opens_runs_one_unit_with_the_workspace_and_no_credential() {
+    let (mut store, mut world) = opened_loop();
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(
+        report.lines[0].decision.map(|d| d.action),
+        Some(Action::StartAttempt { attempt: 1 })
+    );
+    for _ in 0..3 {
+        tick_in(&mut store, &mut world, Mode::Act);
+    }
+    let starts = &world.attempts.starts;
+    assert_eq!(starts.len(), 1, "{starts:?}");
+    let launch = &starts[0];
+    assert_eq!(launch.unit, UNIT);
+    assert_eq!(world.attempts.units[UNIT], UnitSeen::Running);
+
+    // In agent-box, with the attempt directory as its workspace.
+    let dir = Path::new("/fake/runs/1/1");
+    let argv = launch.argv();
+    let tail: Vec<&str> = argv
+        .iter()
+        .skip_while(|a| *a != "--")
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        tail[..4],
+        [
+            "--",
+            "/home/u/code/software/rsb/factory/agent-box/drive.sh",
+            UNIT,
+            "/fake/runs/1/1"
+        ]
+    );
+    assert_eq!(launch.dir, dir);
+    assert_eq!(
+        world.attempts.branches[dir], "feat/5-first-ticket",
+        "the branch from the ticket's slice and file name"
+    );
+
+    // Nothing in its environment but the bot identity, the skills, PATH and
+    // HOME: no credential, and no --bare (Q17).
+    let keys: Vec<&str> = launch.env.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["AGENT_NAME", "AGENT_EMAIL", "RSB_SKILLS", "PATH", "HOME"]
+    );
+    for arg in &argv {
+        assert!(!rsb_gauge_reconcile::brief::credential(arg), "{arg}");
+        for shape in [
+            "ghs_",
+            "TOKEN",
+            "GH_",
+            "GITHUB",
+            "GAUGE_STORE",
+            ".pem",
+            "sqlite",
+        ] {
+            assert!(!arg.contains(shape), "{shape} in {arg}");
+        }
+    }
+    assert!(!argv.iter().any(|a| a == "--bare"));
+
+    // The brief written is the one recorded, which validates against v1.
+    let issued = of_kind(&store, EventKind::BriefIssued);
+    assert_eq!(issued.len(), 1);
+    assert_eq!(world.attempts.briefs[dir], issued[0].payload);
+    rsb_gauge_reconcile::brief::validate(&issued[0].payload).unwrap();
+    assert_eq!(
+        issued[0].payload["issues"]["closes"],
+        serde_json::json!([5])
+    );
+
+    // The record: number, unit, agent, model, start, bound and skills.
+    let started = of_kind(&store, EventKind::AttemptStarted);
+    assert_eq!(started.len(), 1);
+    let record = &started[0].payload;
+    assert_eq!(record["number"], 1);
+    assert_eq!(record["unit"], UNIT);
+    assert_eq!(record["agent"], "claude");
+    assert_eq!(record["model"], "claude-opus-5-5");
+    assert_eq!(record["started_at"], NOW);
+    assert_eq!(record["runtime_bound"], 3600);
+    assert_eq!(
+        record["skills"],
+        serde_json::to_value(crate::fake::fake_skills()).unwrap()
+    );
+    assert!(issued[0].seq < started[0].seq);
+}
+
+#[test]
+fn kill_point_1_between_brief_issued_and_the_unit_start_starts_exactly_one_unit() {
+    let (mut store, mut world) = opened_loop();
+    let (_, _, log) = gated(&mut store.clone(), &mut world.clone(), None);
+    let start = log.iter().position(|c| *c == "start").unwrap();
+    let (result, killed, _) = gated(&mut store, &mut world, Some(start));
+    assert!(killed && result.is_err());
+    assert_eq!(of_kind(&store, EventKind::BriefIssued).len(), 1);
+    assert!(world.attempts.units.is_empty(), "the unit started");
+    assert!(store.snapshot().unwrap().attempts.is_empty());
+
+    for _ in 0..3 {
+        tick_in(&mut store, &mut world, Mode::Act);
+    }
+    assert_eq!(world.attempts.starts.len(), 1);
+    assert_eq!(of_kind(&store, EventKind::BriefIssued).len(), 1);
+    assert_eq!(of_kind(&store, EventKind::AttemptStarted).len(), 1);
+}
+
+#[test]
+fn a_tick_killed_between_the_unit_start_and_the_record_starts_no_second_unit() {
+    let (mut store, mut world) = opened_loop();
+    let (_, _, log) = gated(&mut store.clone(), &mut world.clone(), None);
+    let start = log.iter().position(|c| *c == "start").unwrap();
+    assert_eq!(log[start + 1], "store", "the record follows the start");
+    let (result, killed, _) = gated(&mut store, &mut world, Some(start + 1));
+    assert!(killed && result.is_err());
+    assert_eq!(world.attempts.units[UNIT], UnitSeen::Running);
+    assert!(store.snapshot().unwrap().attempts.is_empty());
+
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(
+        report.lines[0].decision.map(|d| d.action),
+        Some(Action::StartAttempt { attempt: 1 })
+    );
+    for _ in 0..2 {
+        tick_in(&mut store, &mut world, Mode::Act);
+    }
+    assert_eq!(world.attempts.starts.len(), 1, "a second unit started");
+    let attempts = store.snapshot().unwrap().attempts;
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].started.unit, UNIT);
+    assert_eq!(attempts[0].end, None);
+}
+
+#[test]
+fn an_attempt_past_its_bound_is_stopped_and_recorded_timed_out() {
+    let (mut store, mut world) = started_attempt();
+    world.now = NOW + 3599;
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert!(world.attempts.stops.is_empty(), "stopped within its bound");
+    world.now = NOW + 3600;
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(
+        report.lines[0].decision.map(|d| d.action),
+        Some(Action::StopAttempt {
+            attempt: 1,
+            cause: AttemptCause::TimedOut
+        })
+    );
+    assert_eq!(world.attempts.stops, [UNIT]);
+    let end = store.snapshot().unwrap().attempts[0].end.clone().unwrap();
+    assert_eq!(end.cause, Some(AttemptCause::TimedOut));
+    assert_eq!((end.at, end.exit), (NOW + 3600, None));
+    let ended = of_kind(&store, EventKind::AttemptEnded);
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].payload["cause"], "timed_out");
+}
+
+#[test]
+fn a_kill_between_recording_the_stop_and_stopping_stops_on_restart() {
+    let (mut store, mut world) = started_attempt();
+    world.now = NOW + 3600;
+    let (_, _, log) = gated(&mut store.clone(), &mut world.clone(), None);
+    let stop = log.iter().position(|c| *c == "stop").unwrap();
+    let (_, killed, _) = gated(&mut store, &mut world, Some(stop));
+    assert!(killed);
+    assert_eq!(world.attempts.units[UNIT], UnitSeen::Running);
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(world.attempts.stops, [UNIT]);
+    assert_eq!(of_kind(&store, EventKind::AttemptEnded).len(), 1);
+}
+
+#[test]
+fn a_non_zero_exit_with_no_sealed_outbox_records_exited_nonzero() {
+    let (mut store, mut world) = started_attempt();
+    world.attempts.outputs.insert(
+        PathBuf::from("/fake/runs/1/1"),
+        RunOutput {
+            exit: None,
+            stdout: br#"{"type":"result","total_cost_usd":0.5,"usage":{"input_tokens":7,"output_tokens":3}}"#
+                .to_vec(),
+            commits: vec!["c0ffee".into()],
+        },
+    );
+    world.attempts.set(UNIT, UnitSeen::Exited { code: Some(2) });
+    tick_in(&mut store, &mut world, Mode::Act);
+    let end = store.snapshot().unwrap().attempts[0].end.clone().unwrap();
+    assert_eq!(end.cause, Some(AttemptCause::ExitedNonzero));
+    assert_eq!(end.exit, Some(2));
+    let ended = of_kind(&store, EventKind::AttemptEnded);
+    assert_eq!(ended.len(), 1);
+    let payload = &ended[0].payload;
+    assert_eq!(payload["cause"], "exited_nonzero");
+    assert_eq!(payload["exit"], 2);
+    assert_eq!(payload["commits"], serde_json::json!(["c0ffee"]));
+    assert_eq!(payload["usage"]["dollars"], 0.5);
+    assert_eq!(payload["usage"]["input_tokens"], 7);
+}
+
+#[test]
+fn a_non_zero_exit_with_a_sealed_outbox_records_no_cause() {
+    let (mut store, mut world) = started_attempt();
+    world.attempts.seal(Path::new("/fake/runs/1/1"));
+    world.attempts.set(UNIT, UnitSeen::Exited { code: Some(1) });
+    tick_in(&mut store, &mut world, Mode::Act);
+    let end = store.snapshot().unwrap().attempts[0].end.clone().unwrap();
+    assert_eq!((end.exit, end.cause), (Some(1), None));
+    assert!(world.attempts.stops.is_empty());
+}
+
+#[test]
+fn an_invalid_brief_parks_the_loop_and_writes_no_brief() {
+    let (mut store, mut world) = opened_loop();
+    if let Ok(settings) = &mut world.settings {
+        // Brief v1 wants a runtime bound of at least 1.
+        settings.config.runtime_bound = 0;
+    }
+    tick_in(&mut store, &mut world, Mode::Act);
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert!(world.attempts.briefs.is_empty(), "a brief.json was written");
+    assert!(world.attempts.starts.is_empty());
+    assert!(of_kind(&store, EventKind::BriefIssued).is_empty());
+    let run = &store.loops().unwrap()[0];
+    assert_eq!(run.state, LoopState::Parked);
+    assert_eq!(run.park, Some(ParkReason::UnrecognizedState));
+    let parked = of_kind(&store, EventKind::LoopParked);
+    assert_eq!(parked.len(), 1);
+    assert_eq!(
+        parked[0].payload["brief_errors"],
+        serde_json::json!(["runtime_bound: not an integer of at least 1"])
+    );
+}
+
+#[test]
+fn a_ticket_with_no_branch_slice_parks_and_writes_no_brief() {
+    let (mut store, mut world) = opened_loop();
+    world.attempts.ticket = Some("---\nslice: human\n---\n".into());
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert!(world.attempts.briefs.is_empty() && world.attempts.starts.is_empty());
+    assert_eq!(store.loops().unwrap()[0].state, LoopState::Parked);
+}
+
+#[test]
+fn drain_holds_a_start() {
+    let (mut store, mut world) = opened_loop();
+    store
+        .flag(
+            Flag {
+                kind: FlagKind::Drain,
+                scope: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert_eq!(
+        report.lines[0].decision.map(|d| d.situation),
+        Some(Situation::Draining)
+    );
+    tick_in(&mut store, &mut world, Mode::Act);
+    assert!(world.attempts.starts.is_empty());
+    assert!(of_kind(&store, EventKind::BriefIssued).is_empty());
+}
+
+#[test]
+fn a_codex_request_is_refused_with_a_reason_and_opens_no_loop() {
+    let mut store = MemoryStore::new();
+    store
+        .request(
+            &NewRequest {
+                repo: REF.into(),
+                issue: 5,
+                agent: Agent::Codex,
+            },
+            NOW,
+        )
+        .unwrap();
+    tick(&mut store, Mode::Act);
+    assert!(store.loops().unwrap().is_empty());
+    let refused = of_kind(&store, EventKind::RequestRefused);
+    assert_eq!(
+        refused[0].payload["refusal"],
+        serde_json::json!({ "reason": "no_adapter", "agent": "codex" })
+    );
+}
+
+#[test]
+fn without_the_bot_identity_a_start_fails_before_any_brief() {
+    let (mut store, mut world) = opened_loop();
+    world.settings = Err("no config".into());
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert!(matches!(&report.lines[0].outcome, Outcome::Failed(m) if m.contains("no config")));
+    world.settings = Ok(crate::attempt::tests::settings());
+    if let Ok(settings) = &mut world.settings {
+        settings.config.agent_name = None;
+    }
+    let report = tick_in(&mut store, &mut world, Mode::Act);
+    assert!(matches!(&report.lines[0].outcome, Outcome::Failed(m) if m.contains("agent_name")));
+    assert!(of_kind(&store, EventKind::BriefIssued).is_empty());
+    assert!(world.attempts.starts.is_empty());
 }

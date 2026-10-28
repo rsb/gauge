@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::observation::{
     AttemptSeen, IssueObservation, LoopSeen, Observation, TicketCause, TicketSeen, UnitSeen,
 };
-use crate::store::{AttemptCause, LoopState};
+use crate::store::{Agent, AttemptCause, LoopState};
 use crate::vocabulary::vocabulary;
 
 vocabulary! {
@@ -81,6 +81,8 @@ pub enum Refusal {
     NoTicket { cause: TicketCause },
     /// The issue already has a loop that is not closed, open or parked.
     LoopAlreadyOpen {},
+    /// The request names an agent with no adapter yet: Codex until M4.
+    NoAdapter { agent: Agent },
 }
 
 impl fmt::Display for Refusal {
@@ -92,6 +94,7 @@ impl fmt::Display for Refusal {
             Self::NoLockfile {} => f.write_str("the default branch has no .rsb/governance.lock"),
             Self::NoTicket { cause } => write!(f, "the issue names no ticket file ({cause})"),
             Self::LoopAlreadyOpen {} => f.write_str("the issue already has an open loop"),
+            Self::NoAdapter { agent } => write!(f, "agent {agent} has no adapter yet"),
         }
     }
 }
@@ -305,16 +308,25 @@ fn ticket_unresolved(issue: &IssueObservation) -> Option<Decision> {
 }
 
 /// Row 11: a request on an issue with no loop that is not closed opens one,
-/// once its repo has a lockfile and the issue resolves to a ticket file.
+/// once its repo has a lockfile and the issue resolves to a ticket file. A
+/// request for an agent with no adapter (Codex, until M4) is refused here,
+/// so no loop opens that no attempt could run.
 fn run_requested(issue: &IssueObservation) -> Option<Decision> {
-    let world = issue.request.as_ref()?.world.as_ref()?;
+    let request = issue.request.as_ref()?;
+    let world = request.world.as_ref()?;
     world.lockfile.as_ref()?;
     if !matches!(world.ticket, TicketSeen::Resolved { .. }) {
         return None;
     }
+    let action = match request.agent {
+        Agent::Claude => Action::OpenLoop {},
+        agent @ Agent::Codex => Action::Refuse {
+            refusal: Refusal::NoAdapter { agent },
+        },
+    };
     Some(Decision {
         situation: Situation::RunRequested,
-        action: Action::OpenLoop {},
+        action,
     })
 }
 

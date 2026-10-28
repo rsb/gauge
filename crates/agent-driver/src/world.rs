@@ -1,7 +1,7 @@
-//! The GitHub port: what the tick observes on GitHub, and the clone ticket 06
-//! starts an attempt from. The live adapter is in `live.rs`; the fake, for
-//! the tick's tests and the kill harness, in `fake.rs`. Repos are named as
-//! `repos.toml` names them, bare, under [`OWNER`].
+//! The GitHub port: what the tick observes on GitHub, and the clone an
+//! attempt's workspace starts from. The live adapter is in `live.rs`; the
+//! fake, for the tick's tests and the kill harness, in `fake.rs`. Repos are
+//! named as `repos.toml` names them, bare, under [`OWNER`].
 
 use std::path::Path;
 
@@ -87,10 +87,6 @@ pub trait GitHub {
     /// Fetches `repo` at `sha` into `into`, which must be absent or empty,
     /// with `sha` checked out. The credential is passed per command and is
     /// written nowhere: not to `.git/config`, not to disk.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "ticket 06 clones a repo for its first attempt")
-    )]
     fn clone_at(&mut self, repo: &str, sha: &str, into: &Path) -> Result<(), Error>;
 }
 

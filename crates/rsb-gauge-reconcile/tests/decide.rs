@@ -553,3 +553,24 @@ fn decide_is_a_function_of_its_observation() {
     });
     assert_eq!(decide(&observation), decide(&observation.clone()));
 }
+
+#[test]
+fn a_codex_request_is_refused_until_its_adapter_exists() {
+    let mut request = request(Some(Role::Reference)).unwrap();
+    request.agent = Agent::Codex;
+    let observation = IssueObservation {
+        request: Some(request),
+        ..issue()
+    };
+    assert_eq!(
+        decide(&Observation::Issue(observation)),
+        decision(
+            Situation::RunRequested,
+            Action::Refuse {
+                refusal: Refusal::NoAdapter {
+                    agent: Agent::Codex
+                }
+            }
+        )
+    );
+}
