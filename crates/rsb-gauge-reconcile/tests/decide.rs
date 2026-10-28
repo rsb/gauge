@@ -55,6 +55,13 @@ const PARK: Decision = Decision {
     },
 };
 
+const ALREADY_OPEN: Decision = Decision {
+    situation: Situation::RunRequested,
+    action: Action::Refuse {
+        refusal: Refusal::LoopAlreadyOpen {},
+    },
+};
+
 fn refuse(refusal: Refusal) -> Decision {
     decision(Situation::Ineligible, Action::Refuse { refusal })
 }
@@ -95,7 +102,7 @@ fn the_table() {
                 request: request(None),
                 ..issue()
             },
-            refuse(Refusal::NotListed),
+            refuse(Refusal::NotListed {}),
         ),
         (
             "11 a reference repo opens a loop",
@@ -122,13 +129,22 @@ fn the_table() {
             PARK,
         ),
         (
-            "10 a request on an issue whose loop is open matches no row",
+            "11 a request on an issue whose loop is open is refused",
             IssueObservation {
                 request: request(Some(Role::Reference)),
                 run: run(LoopState::Open),
                 ..issue()
             },
-            PARK,
+            ALREADY_OPEN,
+        ),
+        (
+            "11 a request on an issue whose loop is parked is refused",
+            IssueObservation {
+                request: request(Some(Role::Project)),
+                run: run(LoopState::Parked),
+                ..issue()
+            },
+            ALREADY_OPEN,
         ),
         (
             "10 a parked loop, before rows 4 and 5 exist",

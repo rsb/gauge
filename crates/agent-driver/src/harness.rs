@@ -11,7 +11,7 @@ use rsb_gauge_reconcile::store::{
     Agent, Applied, Event, EventKind, Flag, FlagKind, Loop, LoopId, LoopState, NewRequest,
     RequestId, Snapshot, Store, Write,
 };
-use rsb_gauge_reconcile::{MemoryStore, ParkReason, Situation};
+use rsb_gauge_reconcile::{Action, MemoryStore, ParkReason, Refusal, Situation};
 use rsb_gauge_schema::Repos;
 use rsb_gauge_store::SqliteStore;
 
@@ -253,8 +253,19 @@ fn scenarios() -> Vec<(&'static str, Vec<Step>)> {
             vec![Pause(None), Ask("lumen", 9), Tick, Tick],
         ),
         (
-            "a request on an issue whose loop is open",
+            "a second request on an issue whose loop is open is refused",
             vec![Ask("lumen", 3), Tick, Ask("lumen", 3), Tick, Tick],
+        ),
+        (
+            "a request on an issue whose loop is parked is refused",
+            vec![
+                Ask("ref-rsb-serverless-stack", 8),
+                Tick,
+                Tick,
+                Ask("ref-rsb-serverless-stack", 8),
+                Ask("ref-rsb-serverless-stack", 8),
+                Tick,
+            ],
         ),
     ]
 }
@@ -452,6 +463,39 @@ fn an_observation_matching_no_row_parks_with_the_observation_attached() {
     let before = events(&store).len();
     tick(&mut store, Mode::Act);
     assert_eq!(events(&store).len(), before);
+}
+
+#[test]
+fn a_request_on_an_issue_whose_loop_is_open_is_refused_and_the_loop_left_alone() {
+    let mut store = MemoryStore::new();
+    ask(&mut store, "lumen", 6);
+    tick(&mut store, Mode::Act);
+    let before = store.loops().unwrap();
+    assert_eq!(before[0].state, LoopState::Open);
+    let second = ask(&mut store, "lumen", 6);
+    let report = tick(&mut store, Mode::Act);
+    assert_eq!(
+        report.lines[0].decision.map(|d| d.action),
+        Some(Action::Refuse {
+            refusal: Refusal::LoopAlreadyOpen {}
+        })
+    );
+    assert_eq!(store.loops().unwrap(), before);
+    assert!(store.snapshot().unwrap().requests.is_empty());
+    let refused = events(&store).pop().unwrap();
+    assert_eq!(refused.kind, EventKind::RequestRefused);
+    assert_eq!(
+        refused.payload["refusal"],
+        serde_json::json!({ "reason": "loop_already_open" })
+    );
+    assert_eq!(refused.payload["requests"], serde_json::json!([second.0]));
+    assert_eq!(
+        events(&store)
+            .iter()
+            .filter(|e| e.kind == EventKind::LoopParked)
+            .count(),
+        0
+    );
 }
 
 #[test]

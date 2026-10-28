@@ -21,7 +21,8 @@ vocabulary! {
         Paused = "paused",
         /// A run request on a repo that may not host a loop.
         Ineligible = "ineligible",
-        /// A run request on an eligible repo and no open loop for the issue.
+        /// A run request on an eligible repo: it opens a loop, or is refused
+        /// when the issue already has one that is not closed.
         RunRequested = "run_requested",
         /// No row matched.
         Unrecognized = "unrecognized",
@@ -42,21 +43,26 @@ vocabulary! {
     }
 }
 
-/// Why a run request is refused.
+/// Why a run request is refused. The fieldless reasons are written `{}`, not
+/// as unit variants: serde lets an internally tagged unit variant carry
+/// unknown fields, and these must refuse them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Refusal {
     /// The repo is not in the `repos.toml` tied to the store.
-    NotListed,
+    NotListed {},
     /// The repo's role is not `project` or `reference`.
     Role { role: Role },
+    /// The issue already has a loop that is not closed, open or parked.
+    LoopAlreadyOpen {},
 }
 
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotListed => f.write_str("not listed in repos.toml"),
+            Self::NotListed {} => f.write_str("not listed in repos.toml"),
             Self::Role { role } => write!(f, "role {role} may not host a loop"),
+            Self::LoopAlreadyOpen {} => f.write_str("the issue already has an open loop"),
         }
     }
 }
@@ -159,7 +165,7 @@ fn paused(issue: &IssueObservation) -> Option<Decision> {
 fn ineligible(issue: &IssueObservation) -> Option<Decision> {
     let request = issue.request.as_ref()?;
     let refusal = match request.role {
-        None => Refusal::NotListed,
+        None => Refusal::NotListed {},
         Some(role) if !role.is_eligible() => Refusal::Role { role },
         Some(_) => return None,
     };
@@ -169,9 +175,19 @@ fn ineligible(issue: &IssueObservation) -> Option<Decision> {
     })
 }
 
+/// Row 11, with its complement: a request on an issue whose loop is not
+/// closed is refused and the loop left as it is, so a second request can
+/// neither open a second loop nor disturb the first.
 fn run_requested(issue: &IssueObservation) -> Option<Decision> {
-    (issue.request.is_some() && issue.run.is_none()).then_some(Decision {
+    issue.request.as_ref()?;
+    let action = match issue.run {
+        None => Action::OpenLoop,
+        Some(_) => Action::Refuse {
+            refusal: Refusal::LoopAlreadyOpen {},
+        },
+    };
+    Some(Decision {
         situation: Situation::RunRequested,
-        action: Action::OpenLoop,
+        action,
     })
 }

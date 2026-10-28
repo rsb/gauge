@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use rsb_gauge_reconcile::store::{Agent, EventKind, FlagKind, LoopState, RequestState};
 use rsb_gauge_reconcile::{Action, ParkReason, ReconcileError, Refusal, Situation};
+use rsb_gauge_schema::Role;
 
 fn closed<T>(all: &[T], as_str: fn(T) -> &'static str)
 where
@@ -90,4 +91,38 @@ fn action_and_refusal() {
         );
     }
     assert!(serde_json::from_str::<Refusal>(r#"{"reason":"later"}"#).is_err());
+}
+
+#[test]
+fn refusal() {
+    let members = [
+        (Refusal::NotListed {}, r#"{"reason":"not_listed"}"#),
+        (
+            Refusal::Role { role: Role::Record },
+            r#"{"reason":"role","role":"record"}"#,
+        ),
+        (
+            Refusal::LoopAlreadyOpen {},
+            r#"{"reason":"loop_already_open"}"#,
+        ),
+    ];
+    for (member, json) in members {
+        assert_eq!(serde_json::to_string(&member).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Refusal>(json).unwrap(), member);
+    }
+    for outside in [
+        r#"{"reason":"later"}"#,
+        r#"{"reason":"loop_open"}"#,
+        r#"{"reason":"Loop_Already_Open"}"#,
+        r#"{"reason":"loop_already_open","loop":3}"#,
+        r#"{"reason":"not_listed","role":"project"}"#,
+        r#"{"reason":"role"}"#,
+        r#"{"reason":"role","role":"vendor"}"#,
+        r#"{}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<Refusal>(outside).is_err(),
+            "{outside} parsed"
+        );
+    }
 }
