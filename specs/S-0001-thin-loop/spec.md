@@ -144,8 +144,9 @@ park list and attempt causes from that record.
 | 3 | 7 | PR merged or closed | stop any attempt (cause `stopped`); close the loop; write the run record | 08 |
 | 4 | 16 | Parked, resume requested | clear the park; reset the no-progress memory; continue | 09 |
 | 5 | 17 | Parked | wait | 09 |
-| 6 | N1 | Run requested on a repo not eligible (role not `project` or `reference`, or no lockfile on the default branch) | refuse the request with its reason; no loop | 03 (role), 05 (lockfile) |
+| 6 | N1 | Run requested on a repo not eligible (role not `project` or `reference`, or no lockfile on the default branch; or a repo the driver's config does not list, `not_reached`) | refuse the request with its reason; no loop | 03 (role), 05 (lockfile) |
 | 7a | N11 | Run requested, eligible, a loop for this issue that is not closed (open or parked) | refuse the request `loop_already_open`; leave the loop untouched | 03 |
+| 7b | N12 | Run requested, eligible, the issue names no ticket file on the default branch | refuse the request `no_ticket` with its cause; no loop | 05 |
 | 7 | 11 | Run requested, eligible, no loop for this issue that is not closed | open the loop | 03 |
 | 8 | 1 | Attempt running, within its runtime bound | wait | 06 |
 | 9 | N2 | Attempt running past its runtime bound | stop the unit; failed attempt, cause `timed_out` | 06 |
