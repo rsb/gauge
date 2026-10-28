@@ -1174,8 +1174,11 @@ name = "rsb-gauge-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "rsb-gauge-reconcile",
  "rsb-gauge-schema",
+ "rsb-gauge-store",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
