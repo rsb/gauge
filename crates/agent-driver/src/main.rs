@@ -10,15 +10,19 @@
 mod audit;
 mod config;
 mod error;
-#[expect(dead_code, reason = "the issue list and writes wait for the tick")]
+mod git;
+#[expect(dead_code, reason = "the issue writes wait for ticket 07")]
 mod github;
 mod jwt;
+mod live;
 mod registry;
 mod repo;
 mod tick;
-#[expect(dead_code, reason = "the token holder waits for the tick")]
 mod tokens;
+mod world;
 
+#[cfg(test)]
+mod fake;
 #[cfg(test)]
 mod harness;
 
@@ -32,9 +36,10 @@ use rsb_gauge_store::SqliteStore;
 use crate::config::Config;
 use crate::error::{Error, report};
 use crate::github::{Access, Client, Permissions};
+use crate::live::Live;
 use crate::registry::Registry;
 use crate::repo::RepoName;
-use crate::tick::{Mode, Outcome, Report, SystemClock};
+use crate::tick::{Mode, Outcome, Polled, Report, SystemClock};
 
 /// Holds the GitHub App key and talks to GitHub as the App.
 #[derive(Parser)]
@@ -121,40 +126,66 @@ fn tick_store(path: &Path, mode: Mode) -> Result<Report, Error> {
         .map_err(Error::from)
         .and_then(|repos| Registry::load(&repos))
         .map_err(|e| report(&e));
-    Ok(tick::run(&mut store, &registry, &SystemClock, mode)?)
+    // Without its config the driver reaches no repo: the tick polls nothing
+    // and fails only the requests that need GitHub.
+    let config = Config::load().map_err(|e| report(&e));
+    let mut github = Live::new(config.as_ref().map_err(Clone::clone));
+    Ok(tick::run(
+        &mut store,
+        &mut github,
+        &registry,
+        &SystemClock,
+        mode,
+    )?)
 }
 
-/// The report, one line per issue, then a summary.
+/// The report: one line per repo polled, one per issue, then a summary.
 fn lines(report: &Report, mode: Mode) -> Vec<String> {
+    let new = match mode {
+        Mode::Act => "new",
+        Mode::Observe => "new, not recorded",
+    };
     let mut out: Vec<String> = report
-        .lines
+        .polls
         .iter()
-        .map(|line| {
-            let subject = match line.loop_id {
-                Some(id) => format!("{}#{} loop {id}", line.repo, line.issue),
-                None => format!("{}#{}", line.repo, line.issue),
-            };
-            let decided = match &line.decision {
-                Some(d) => format!("{}: {}", d.situation, d.action),
-                None => "undecided".to_owned(),
-            };
-            let outcome = match &line.outcome {
-                Outcome::Observed => "not acted on".to_owned(),
-                Outcome::Waited => "nothing written".to_owned(),
-                Outcome::Applied(rsb_gauge_reconcile::store::Applied::Recorded(event)) => {
-                    format!("event {} {}", event.seq, event.kind)
+        .map(|poll| {
+            let repo = poll.repo.as_deref().unwrap_or("every repo");
+            match &poll.polled {
+                Polled::Seen { labelled, new: n } => {
+                    format!("poll {repo}: {labelled} labelled, {n} {new}")
                 }
-                Outcome::Applied(rsb_gauge_reconcile::store::Applied::Updated) => {
-                    "situation recorded".to_owned()
+                Polled::Unreached => {
+                    format!("poll {repo}: not polled, the driver's config does not list it")
                 }
-                Outcome::Applied(rsb_gauge_reconcile::store::Applied::Noop) => {
-                    "already done".to_owned()
-                }
-                Outcome::Failed(message) => format!("failed: {message}"),
-            };
-            format!("{subject}: {decided} ({outcome})")
+                Polled::Failed(message) => format!("poll {repo}: failed: {message}"),
+            }
         })
         .collect();
+    out.extend(report.lines.iter().map(|line| {
+        let subject = match line.loop_id {
+            Some(id) => format!("{}#{} loop {id}", line.repo, line.issue),
+            None => format!("{}#{}", line.repo, line.issue),
+        };
+        let decided = match &line.decision {
+            Some(d) => format!("{}: {}", d.situation, d.action),
+            None => "undecided".to_owned(),
+        };
+        let outcome = match &line.outcome {
+            Outcome::Observed => "not acted on".to_owned(),
+            Outcome::Waited => "nothing written".to_owned(),
+            Outcome::Applied(rsb_gauge_reconcile::store::Applied::Recorded(event)) => {
+                format!("event {} {}", event.seq, event.kind)
+            }
+            Outcome::Applied(rsb_gauge_reconcile::store::Applied::Updated) => {
+                "situation recorded".to_owned()
+            }
+            Outcome::Applied(rsb_gauge_reconcile::store::Applied::Noop) => {
+                "already done".to_owned()
+            }
+            Outcome::Failed(message) => format!("failed: {message}"),
+        };
+        format!("{subject}: {decided} ({outcome})")
+    }));
     let verb = match mode {
         Mode::Act => "tick",
         Mode::Observe => "observe",

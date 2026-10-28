@@ -25,6 +25,8 @@ pub enum StoreError {
     Newer { found: i64, known: i64 },
     #[error("the store has no {0} setting")]
     NoSetting(&'static str),
+    #[error("loop {0} has part of a ticket recorded, not all of it")]
+    PartialTicket(i64),
     #[error("{what} {value} is out of range")]
     Range { what: &'static str, value: String },
     #[error(transparent)]

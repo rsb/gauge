@@ -297,8 +297,12 @@ fn runs(store: &impl Store<Error = StoreError>) -> Result<Outcome, Error> {
                 None => l.state.to_string(),
             };
             let situation = l.situation.map_or("-", |s| s.as_str());
+            let ticket = l
+                .ticket
+                .as_ref()
+                .map_or_else(String::new, |t| format!(", ticket {}", t.id));
             format!(
-                "loop {} {}#{} ({}) {state}, last {situation}, {}, opened {}",
+                "loop {} {}#{} ({}) {state}, last {situation}, {}{ticket}, opened {}",
                 l.id,
                 l.repo,
                 l.issue,

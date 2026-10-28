@@ -15,5 +15,8 @@ pub use decide::{
 };
 pub use error::ReconcileError;
 pub use memory::MemoryStore;
-pub use observation::{IssueObservation, IssueRows, LoopSeen, Observation, RequestSeen, issues};
+pub use observation::{
+    IssueObservation, IssueRows, LoopSeen, Observation, RequestSeen, TicketCause, TicketSeen,
+    WorldSeen, issues,
+};
 pub use store::Store;

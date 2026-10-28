@@ -8,7 +8,7 @@ use std::fmt;
 use rsb_gauge_schema::Role;
 use serde::{Deserialize, Serialize};
 
-use crate::observation::{IssueObservation, Observation};
+use crate::observation::{IssueObservation, Observation, TicketCause, TicketSeen};
 use crate::vocabulary::vocabulary;
 
 vocabulary! {
@@ -19,8 +19,11 @@ vocabulary! {
         StoreUnreachable = "store_unreachable",
         /// A pause flag, global or on this loop.
         Paused = "paused",
-        /// A run request on a repo that may not host a loop.
+        /// A run request on a repo that may not host a loop: by its role, or
+        /// for want of a lockfile on its default branch.
         Ineligible = "ineligible",
+        /// A run request on an issue that names no ticket a loop could run.
+        TicketUnresolved = "ticket_unresolved",
         /// A run request on an eligible repo: it opens a loop, or is refused
         /// when the issue already has one that is not closed.
         RunRequested = "run_requested",
@@ -53,6 +56,14 @@ pub enum Refusal {
     NotListed {},
     /// The repo's role is not `project` or `reference`.
     Role { role: Role },
+    /// The driver does not reach the repo on GitHub: its config does not
+    /// list it, so nothing of the repo can be seen.
+    NotReached {},
+    /// The repo's default branch has no `.rsb/governance.lock`: it has not
+    /// been minted or aligned.
+    NoLockfile {},
+    /// The issue names no ticket file on the default branch.
+    NoTicket { cause: TicketCause },
     /// The issue already has a loop that is not closed, open or parked.
     LoopAlreadyOpen {},
 }
@@ -62,6 +73,9 @@ impl fmt::Display for Refusal {
         match self {
             Self::NotListed {} => f.write_str("not listed in repos.toml"),
             Self::Role { role } => write!(f, "role {role} may not host a loop"),
+            Self::NotReached {} => f.write_str("the driver's config does not list the repo"),
+            Self::NoLockfile {} => f.write_str("the default branch has no .rsb/governance.lock"),
+            Self::NoTicket { cause } => write!(f, "the issue names no ticket file ({cause})"),
             Self::LoopAlreadyOpen {} => f.write_str("the issue already has an open loop"),
         }
     }
@@ -134,6 +148,11 @@ pub const ROWS: &[Row] = &[
     },
     Row {
         order: 7,
+        number: "N12",
+        rule: ticket_unresolved,
+    },
+    Row {
+        order: 7,
         number: "11",
         rule: run_requested,
     },
@@ -169,12 +188,20 @@ fn paused(issue: &IssueObservation) -> Option<Decision> {
     })
 }
 
+/// Row N1: by role from `repos.toml`, then by the lockfile on the default
+/// branch, "the lockfile is the mechanical test" (record 1, 1a). A repo
+/// eligible by role that the driver does not reach has no world seen, and
+/// cannot host a loop either.
 fn ineligible(issue: &IssueObservation) -> Option<Decision> {
     let request = issue.request.as_ref()?;
     let refusal = match request.role {
         None => Refusal::NotListed {},
         Some(role) if !role.is_eligible() => Refusal::Role { role },
-        Some(_) => return None,
+        Some(_) => match &request.world {
+            None => Refusal::NotReached {},
+            Some(world) if world.lockfile.is_none() => Refusal::NoLockfile {},
+            Some(_) => return None,
+        },
     };
     Some(Decision {
         situation: Situation::Ineligible,
@@ -196,9 +223,29 @@ fn loop_already_open(issue: &IssueObservation) -> Option<Decision> {
     })
 }
 
-/// Row 11: a request on an issue with no loop that is not closed opens one.
+/// Row N12: a request on an issue that names no ticket file is refused, not
+/// parked: no loop exists yet to park.
+fn ticket_unresolved(issue: &IssueObservation) -> Option<Decision> {
+    let world = issue.request.as_ref()?.world.as_ref()?;
+    let TicketSeen::Unresolved { cause } = world.ticket else {
+        return None;
+    };
+    Some(Decision {
+        situation: Situation::TicketUnresolved,
+        action: Action::Refuse {
+            refusal: Refusal::NoTicket { cause },
+        },
+    })
+}
+
+/// Row 11: a request on an issue with no loop that is not closed opens one,
+/// once its repo has a lockfile and the issue resolves to a ticket file.
 fn run_requested(issue: &IssueObservation) -> Option<Decision> {
-    issue.request.as_ref()?;
+    let world = issue.request.as_ref()?.world.as_ref()?;
+    world.lockfile.as_ref()?;
+    if !matches!(world.ticket, TicketSeen::Resolved { .. }) {
+        return None;
+    }
     Some(Decision {
         situation: Situation::RunRequested,
         action: Action::OpenLoop {},

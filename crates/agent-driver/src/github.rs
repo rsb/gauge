@@ -10,6 +10,7 @@ use ureq::Agent;
 use ureq::config::Config as UreqConfig;
 
 use crate::error::Error;
+use crate::git::Auth;
 use crate::jwt::Jwt;
 use crate::repo::RepoName;
 
@@ -61,6 +62,20 @@ pub struct Token(String);
 impl Token {
     fn bearer(&self) -> String {
         format!("Bearer {}", self.0)
+    }
+
+    /// The credential for one git fetch over HTTPS from GitHub, as
+    /// `x-access-token` basic auth. It goes only into the environment of the
+    /// command that uses it.
+    pub fn git_auth(&self) -> Auth {
+        use base64::Engine as _;
+        let basic =
+            base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", self.0));
+        Auth {
+            url: "https://github.com/".to_owned(),
+            header: format!("AUTHORIZATION: basic {basic}"),
+            secret: basic,
+        }
     }
 }
 
@@ -162,6 +177,22 @@ impl Client {
             .map_err(|source| http_error(what, source))
     }
 
+    /// The raw bytes of a file from the contents API.
+    fn get_raw(&self, what: &'static str, path: &str, token: &Token) -> Result<Vec<u8>, Error> {
+        let response = self
+            .agent
+            .get(format!("{API}{path}"))
+            .header("Accept", "application/vnd.github.raw+json")
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .header("Authorization", token.bearer())
+            .call()
+            .map_err(|source| http_error(what, source))?;
+        response
+            .into_body()
+            .read_to_vec()
+            .map_err(|source| http_error(what, source))
+    }
+
     fn post<T: serde::de::DeserializeOwned>(
         &self,
         what: &'static str,
@@ -249,6 +280,61 @@ impl Client {
         self.get("issue list", &path, &token.bearer())
     }
 
+    /// One page of an issue's events, oldest first.
+    pub fn issue_events(
+        &self,
+        token: &Token,
+        repo: &RepoName,
+        number: u64,
+        page: u32,
+    ) -> Result<Vec<IssueEvent>, Error> {
+        let path = format!(
+            "/repos/{}/{}/issues/{number}/events?per_page={PER_PAGE}&page={page}",
+            repo.owner(),
+            repo.name()
+        );
+        self.get("issue events", &path, &token.bearer())
+    }
+
+    pub fn repository(&self, token: &Token, repo: &RepoName) -> Result<Repository, Error> {
+        let path = format!("/repos/{}/{}", repo.owner(), repo.name());
+        self.get("repo view", &path, &token.bearer())
+    }
+
+    pub fn branch(&self, token: &Token, repo: &RepoName, name: &str) -> Result<BranchRef, Error> {
+        let path = format!(
+            "/repos/{}/{}/branches/{}",
+            repo.owner(),
+            repo.name(),
+            encode_path(name)
+        );
+        self.get("branch view", &path, &token.bearer())
+    }
+
+    /// A directory's entries at `sha`; `None` when there is no such path.
+    pub fn list(
+        &self,
+        token: &Token,
+        repo: &RepoName,
+        sha: &str,
+        dir: &str,
+    ) -> Result<Option<Vec<ContentEntry>>, Error> {
+        let path = contents(repo, sha, dir);
+        not_found_is_none(self.get("contents list", &path, &token.bearer()))
+    }
+
+    /// A file's bytes at `sha`; `None` when there is no such path.
+    pub fn read(
+        &self,
+        token: &Token,
+        repo: &RepoName,
+        sha: &str,
+        file: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let path = contents(repo, sha, file);
+        not_found_is_none(self.get_raw("contents read", &path, token))
+    }
+
     pub fn comment(
         &self,
         token: &Token,
@@ -276,18 +362,86 @@ impl Client {
     }
 }
 
+/// The page size every listing asks for, GitHub's largest.
+pub const PER_PAGE: u8 = 100;
+
+fn contents(repo: &RepoName, sha: &str, path: &str) -> String {
+    format!(
+        "/repos/{}/{}/contents/{}?ref={}",
+        repo.owner(),
+        repo.name(),
+        encode_path(path),
+        encode(sha)
+    )
+}
+
+/// Percent-encodes each segment of a slash-separated path.
+fn encode_path(path: &str) -> String {
+    path.split('/').map(encode).collect::<Vec<_>>().join("/")
+}
+
+fn not_found_is_none<T>(result: Result<T, Error>) -> Result<Option<T>, Error> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(Error::Status { status: 404, .. }) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// An entry of an issue's event list. `label` is present on `labeled` and
+/// `unlabeled` events.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct IssueEvent {
+    pub id: u64,
+    pub event: String,
+    #[serde(default)]
+    pub label: Option<IssueLabel>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Repository {
+    pub default_branch: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct BranchRef {
+    pub name: String,
+    pub commit: CommitRef,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CommitRef {
+    pub sha: String,
+}
+
+/// An entry of a contents listing. `type` is `file`, `dir`, `symlink` or
+/// `submodule`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ContentEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
 /// Query of `GET /repos/{owner}/{repo}/issues`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListQuery {
     pub state: &'static str,
     pub label: Option<String>,
     pub per_page: u8,
+    /// 1-based.
+    pub page: u32,
 }
 
 impl ListQuery {
     /// The query string, every value percent-encoded.
     pub fn encode(&self) -> String {
-        let mut query = format!("state={}&per_page={}", encode(self.state), self.per_page);
+        let mut query = format!(
+            "state={}&per_page={}&page={}",
+            encode(self.state),
+            self.per_page,
+            self.page
+        );
         if let Some(label) = &self.label {
             query.push_str("&labels=");
             query.push_str(&encode(label));
@@ -423,16 +577,26 @@ mod tests {
             state: "open",
             label: Some("good first issue&state=closed".to_owned()),
             per_page: 30,
+            page: 2,
         };
         assert_eq!(
             query.encode(),
-            "state=open&per_page=30&labels=good%20first%20issue%26state%3Dclosed"
+            "state=open&per_page=30&page=2&labels=good%20first%20issue%26state%3Dclosed"
         );
         let plain = ListQuery {
             label: None,
             ..query
         };
-        assert_eq!(plain.encode(), "state=open&per_page=30");
+        assert_eq!(plain.encode(), "state=open&per_page=30&page=2");
+        let run = ListQuery {
+            label: Some("rsb-workflow:run".to_owned()),
+            page: 1,
+            ..plain
+        };
+        assert_eq!(
+            run.encode(),
+            "state=open&per_page=30&page=1&labels=rsb-workflow%3Arun"
+        );
     }
 
     #[test]
@@ -454,6 +618,53 @@ mod tests {
         assert!(!issue.is_pull_request());
         assert_eq!(pr.state, State::Closed);
         assert!(pr.is_pull_request());
+    }
+
+    #[test]
+    fn contents_paths_encode_each_segment_and_the_ref() {
+        assert_eq!(
+            contents(&lumen(), "abc123", "specs/S-0001-thin loop/05-a.md"),
+            "/repos/rsb/lumen/contents/specs/S-0001-thin%20loop/05-a.md?ref=abc123"
+        );
+        assert_eq!(
+            contents(&lumen(), "abc", ".rsb/governance.lock"),
+            "/repos/rsb/lumen/contents/.rsb/governance.lock?ref=abc"
+        );
+    }
+
+    #[test]
+    fn events_listings_and_branches_parse_from_the_api_shape() {
+        let events: Vec<IssueEvent> = serde_json::from_str(
+            r#"[{"id":11,"event":"labeled","label":{"name":"rsb-workflow:run","color":"x"},
+                 "actor":{"login":"rsb"}},
+                {"id":12,"event":"renamed","rename":{"from":"a","to":"b"}}]"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            events[0].label.as_ref().map(|l| l.name.as_str()),
+            Some("rsb-workflow:run")
+        );
+        assert_eq!(events[1].label, None);
+        let entries: Vec<ContentEntry> = serde_json::from_str(
+            r#"[{"name":"S-0001-thin-loop","path":"specs/S-0001-thin-loop","type":"dir","sha":"x"}]"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(entries[0].kind, "dir");
+        let branch: BranchRef = serde_json::from_str(
+            r#"{"name":"main","commit":{"sha":"0123","url":"u"},"protected":true}"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(branch.commit.sha, "0123");
+    }
+
+    #[test]
+    fn the_git_credential_is_basic_x_access_token() {
+        let token = Token("ghs_secret".to_owned());
+        let auth = token.git_auth();
+        // base64("x-access-token:ghs_secret")
+        assert_eq!(auth.secret, "eC1hY2Nlc3MtdG9rZW46Z2hzX3NlY3JldA==");
+        assert_eq!(auth.header, format!("AUTHORIZATION: basic {}", auth.secret));
+        assert_eq!(auth.url, "https://github.com/");
     }
 
     #[test]

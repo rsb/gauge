@@ -58,6 +58,27 @@ pub enum Error {
     },
     #[error("registry")]
     Registry(#[from] RegistryError),
+    #[error("the driver's config is unavailable: {0}")]
+    NoConfig(String),
+    #[error("{repo}#{issue} carries the run label but no event applied it")]
+    NoLabelEvent { repo: String, issue: u64 },
+    #[error("{0:?} is not a full commit id")]
+    Sha(String),
+    #[error("{0} exists and is not empty")]
+    CloneTarget(PathBuf),
+    #[error("cannot start git")]
+    GitStart(#[source] std::io::Error),
+    /// git's own message, with the credential cut out.
+    #[error("git {what} exited {}: {stderr}", exit(*.status))]
+    Git {
+        what: &'static str,
+        status: Option<i32>,
+        stderr: String,
+    },
+}
+
+fn exit(status: Option<i32>) -> String {
+    status.map_or_else(|| "on a signal".to_owned(), |code| code.to_string())
 }
 
 /// Renders an error for a person: each error in the `source()` chain, joined

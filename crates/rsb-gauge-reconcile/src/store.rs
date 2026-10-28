@@ -89,6 +89,40 @@ pub struct Request {
     pub issue: u64,
     pub agent: Agent,
     pub at: i64,
+    /// The GitHub event that applied the run label, for a request from a
+    /// label; `None` for one from `gauge run`.
+    pub label: Option<u64>,
+}
+
+/// A request's natural key when it comes from a label: (repo, issue, label
+/// event id). The label stays on the issue at M1, so every tick sees it again
+/// and only a new event is a new request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelKey {
+    pub repo: String,
+    pub issue: u64,
+    pub event: u64,
+}
+
+/// What a loop opened on: the ticket, and the default branch at the commit
+/// the ticket and the lockfile were read from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LoopTicket {
+    /// `S-NNNN/N`.
+    pub id: String,
+    /// `specs/S-NNNN-<slug>/NN-<slug>.md`, from the repo's root.
+    pub path: String,
+    pub branch: String,
+    pub sha: String,
+    /// The lockfile's SHA-256, in hex.
+    pub lockfile: String,
+}
+
+impl LoopTicket {
+    /// The spec id, `S-NNNN`.
+    pub fn spec(&self) -> &str {
+        self.id.split_once('/').map_or(&self.id, |(spec, _)| spec)
+    }
 }
 
 /// One Work Stream Loop.
@@ -105,6 +139,9 @@ pub struct Loop {
     /// The situation the last acting tick derived.
     pub situation: Option<Situation>,
     pub opened_at: i64,
+    /// `None` only on a loop opened before tickets were resolved (S-0001
+    /// ticket 03).
+    pub ticket: Option<LoopTicket>,
 }
 
 /// A flag on one loop, or on every loop when `scope` is `None`.
@@ -150,6 +187,7 @@ pub enum Write {
         agent: Agent,
         requests: Vec<RequestId>,
         situation: Situation,
+        ticket: LoopTicket,
     },
     /// Mark the requests refused. A no-op when none is still pending.
     Refuse {
@@ -223,6 +261,19 @@ pub trait Store {
 
     /// Inserts a run request and bumps the trigger.
     fn request(&mut self, request: &NewRequest, at: i64) -> Result<RequestId, Self::Error>;
+
+    /// Inserts a run request from a label, keyed by `key`: `None`, and
+    /// nothing written, when a request with that key exists in any state.
+    /// The tick calls it, so it does not bump the trigger.
+    fn label_request(
+        &mut self,
+        key: &LabelKey,
+        agent: Agent,
+        at: i64,
+    ) -> Result<Option<RequestId>, Self::Error>;
+
+    /// Whether a request with `key` exists, in any state.
+    fn label_requested(&self, key: &LabelKey) -> Result<bool, Self::Error>;
 
     /// Sets a flag and bumps the trigger. False when it was already set.
     fn flag(&mut self, flag: Flag, at: i64) -> Result<bool, Self::Error>;
