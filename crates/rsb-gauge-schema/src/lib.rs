@@ -4,16 +4,19 @@
 //! `schemars` derives the JSON Schema from them for the editor and CI, and
 //! an unknown field or value is a parse error. The registry content lives in
 //! `rsb/agent-registry`; this crate only reads it. The agent never reads a rule file,
-//! only the projections `render` makes from it.
+//! only the projections `render` makes from it. [`repos`] reads `repos.toml`,
+//! the portfolio and each repo's role.
 
 mod error;
 pub mod lint;
+pub mod repos;
 pub mod rule;
 
 use std::path::{Path, PathBuf};
 
 pub use error::RegistryError;
 pub use lint::{Finding, Problem, lint};
+pub use repos::{Repo, Repos, Role};
 pub use rule::Rule;
 
 /// One rule and where it came from. The topic is the rule's directory
