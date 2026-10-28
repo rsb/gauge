@@ -64,6 +64,9 @@ requirement 1).
 - Attempt cause recorded at the end of every attempt that does not
   hand back: `exited_nonzero`, `timed_out`, `stopped` here; the rest
   in 07.
+- `stopped` is in the cause vocabulary here but recorded by the rows
+  that stop a running attempt, 7 (PR merged or closed, 08) and 15
+  (abort, 09): no row in 06 stops one except at its bound, `timed_out`.
 - Branch name derived from the ticket (`<type>/<issue>-<slug>`, as
   today); created locally from the base sha; not pushed here.
 - Claude adapter: `claude -p`, JSON output, `CLAUDE.md` as the one-line
