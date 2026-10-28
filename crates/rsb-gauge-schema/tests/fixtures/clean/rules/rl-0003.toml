@@ -1,0 +1,17 @@
+id = "rl-0003"
+statement = "Engineering rule migrations/13: schema.sql matches a dump of the migrations."
+why = "A schema.sql that drifts from the migrations misleads every reader of it."
+check_class = "exact"
+consequence = "coherence"
+source = { file = "engineering/migrations.md", number = 13 }
+
+[scope]
+paths = ["packages/db/**"]
+
+[lifecycle]
+state = "trial"
+since = "2026-10-26"
+
+[[checks]]
+kind = "test"
+ref = "packages/db/tests/schema.test.ts"

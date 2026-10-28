@@ -1,15 +1,13 @@
-id = "ERR-7"
+id = "rl-0002"
 statement = "An error names the domain thing that failed. It carries no status for our own reply, no client copy, and no value unsafe to log."
 why = "A value such as an email ends up in the log and in another Worker."
 check_class = "judgement"
-default_level = "warn"
+consequence = "business"
 exemplars = ["packages/core/fail/src/catalog.ts"]
 patterns = ["errors-as-values"]
 
 [scope]
-tree = "rsb/web"
-toolchain = "typescript"
-paths = ["packages/**/src/**", "apps/**/src/**"]
+paths = ["src/**"]
 
 [lifecycle]
 state = "enforced"

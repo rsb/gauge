@@ -3,29 +3,27 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::rule::{CheckClass, State};
-use crate::{Entry, Registry};
+use crate::Registry;
+use crate::rule::{Check, CheckClass, Lifecycle, State};
 
-/// The problem a finding names, as it appears in the finding line.
+/// The problem a finding names, as it appears in the finding line. A file
+/// named for the wrong id, and so a duplicate id, is refused by the load and
+/// never reaches the linter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Problem {
-    /// The file's stem is not the rule's id.
-    FileName,
-    /// Two rules share an id.
-    DuplicateId,
-    /// Two rules share a statement.
+    /// Two entries, rules or heuristics, share a statement.
     DuplicateStatement,
     /// `why` is empty.
     MissingWhy,
-    /// An enforced or trial rule has no check and is not judgement.
+    /// A trial or enforced entry has no check and is not judgement.
     NoCheck,
-    /// An enforced rule has no exemplar.
+    /// An enforced entry has no exemplar.
     NoExemplar,
-    /// A rule past draft has no `lifecycle.since`.
+    /// An entry past draft has no `lifecycle.since`.
     Unstamped,
-    /// A retired rule has no reason.
+    /// A retired entry has no reason.
     RetiredWithoutReason,
     /// A date is not `YYYY-MM-DD`.
     BadDate,
@@ -36,8 +34,6 @@ pub enum Problem {
 impl Problem {
     fn name(self) -> &'static str {
         match self {
-            Problem::FileName => "file-name",
-            Problem::DuplicateId => "duplicate-id",
             Problem::DuplicateStatement => "duplicate-statement",
             Problem::MissingWhy => "missing-why",
             Problem::NoCheck => "no-check",
@@ -70,78 +66,89 @@ impl fmt::Display for Finding {
     }
 }
 
-/// Every finding in the registry, in path order.
-pub fn lint(registry: &Registry) -> Vec<Finding> {
-    let mut out = Vec::new();
-    let mut by_id: HashMap<&str, &Entry> = HashMap::new();
-    let mut by_statement: HashMap<&str, &Entry> = HashMap::new();
+/// What the linter reads, the same for a rule and a heuristic.
+struct View<'a> {
+    path: &'a Path,
+    id: &'a str,
+    statement: &'a str,
+    why: &'a str,
+    check_class: CheckClass,
+    lifecycle: &'a Lifecycle,
+    checks: &'a [Check],
+    exemplars: &'a [String],
+}
 
-    for entry in &registry.entries {
-        let rule = &entry.rule;
+/// Every finding in the registry: rules in path order, then heuristics.
+pub fn lint(registry: &Registry) -> Vec<Finding> {
+    let rules = registry.rules.iter().map(|e| View {
+        path: &e.path,
+        id: &e.item.id,
+        statement: &e.item.statement,
+        why: &e.item.why,
+        check_class: e.item.check_class,
+        lifecycle: &e.item.lifecycle,
+        checks: &e.item.checks,
+        exemplars: &e.item.exemplars,
+    });
+    let heuristics = registry.heuristics.iter().map(|e| View {
+        path: &e.path,
+        id: &e.item.id,
+        statement: &e.item.statement,
+        why: &e.item.why,
+        check_class: e.item.check_class,
+        lifecycle: &e.item.lifecycle,
+        checks: &e.item.checks,
+        exemplars: &e.item.exemplars,
+    });
+
+    let mut out = Vec::new();
+    let mut by_statement: HashMap<&str, &str> = HashMap::new();
+    for entry in rules.chain(heuristics) {
         let finding = |problem, what: String| Finding {
-            path: entry.path.clone(),
+            path: entry.path.to_path_buf(),
             problem,
             what,
         };
 
-        let stem = entry
-            .path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        if stem != rule.id {
-            out.push(finding(
-                Problem::FileName,
-                format!("file is named {stem:?} but the rule is {:?}", rule.id),
-            ));
-        }
-        if let Some(first) = by_id.insert(&rule.id, entry) {
-            out.push(finding(
-                Problem::DuplicateId,
-                format!("{} is also {}", rule.id, first.path.display()),
-            ));
-        }
-        if let Some(first) = by_statement.insert(rule.statement.trim(), entry) {
+        if let Some(first) = by_statement.insert(entry.statement.trim(), entry.id) {
             out.push(finding(
                 Problem::DuplicateStatement,
-                format!("same statement as {}", first.rule.id),
+                format!("same statement as {first}"),
             ));
         }
-        if rule.why.trim().is_empty() {
-            out.push(finding(Problem::MissingWhy, "a rule says why".to_owned()));
+        if entry.why.trim().is_empty() {
+            out.push(finding(Problem::MissingWhy, "an entry says why".to_owned()));
         }
 
-        let state = rule.lifecycle.state;
+        let lifecycle = entry.lifecycle;
+        let state = lifecycle.state;
         let needs_check = matches!(state, State::Trial | State::Enforced)
-            && rule.check_class != CheckClass::Judgement;
-        if needs_check && rule.checks.is_empty() {
+            && entry.check_class != CheckClass::Judgement;
+        if needs_check && entry.checks.is_empty() {
             out.push(finding(
                 Problem::NoCheck,
-                "a trial or enforced rule names the check that holds it".to_owned(),
+                "a trial or enforced entry names the check that holds it".to_owned(),
             ));
         }
-        if state == State::Enforced && rule.exemplars.is_empty() {
+        if state == State::Enforced && entry.exemplars.is_empty() {
             out.push(finding(
                 Problem::NoExemplar,
-                "an enforced rule points at a file that follows it".to_owned(),
+                "an enforced entry points at a file that follows it".to_owned(),
             ));
         }
-        if state != State::Draft && rule.lifecycle.since.is_none() {
+        if state != State::Draft && lifecycle.since.is_none() {
             out.push(finding(
                 Problem::Unstamped,
-                "a rule past draft records the date it entered its state".to_owned(),
+                "an entry past draft records the date it entered its state".to_owned(),
             ));
         }
-        if state == State::Retired && rule.lifecycle.reason.is_none() {
+        if state == State::Retired && lifecycle.reason.is_none() {
             out.push(finding(
                 Problem::RetiredWithoutReason,
-                "a retired rule says why".to_owned(),
+                "a retired entry says why".to_owned(),
             ));
         }
-        for (field, value) in [
-            ("since", &rule.lifecycle.since),
-            ("until", &rule.lifecycle.until),
-        ] {
+        for (field, value) in [("since", &lifecycle.since), ("until", &lifecycle.until)] {
             if let Some(date) = value
                 && !is_date(date)
             {
@@ -151,7 +158,7 @@ pub fn lint(registry: &Registry) -> Vec<Finding> {
                 ));
             }
         }
-        for check in &rule.checks {
+        for check in entry.checks {
             if let Some(p) = check.precision
                 && !(0.0..=1.0).contains(&p)
             {

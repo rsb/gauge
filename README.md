@@ -21,7 +21,7 @@ crate boundary: see `engineering/layers.md`.
 
 | Crate | Layer | Holds |
 |---|---|---|
-| `rsb-gauge-schema` | 0 | The rule types, the TOML loader, the JSON Schema, the registry linter, and `repos.toml` with its closed set of roles. |
+| `rsb-gauge-schema` | 0 | The rule and heuristic types, the TOML loader, their JSON Schemas, the registry linter, and `repos.toml` with its closed set of roles. |
 | `rsb-gauge-reconcile` | 1 | Observation, situation, action and event as closed enums; the pure `decide` with first-match precedence; the store port and its in-memory fake. No I/O. |
 | `rsb-gauge-store` | 2 | The store as a SQLite file at `GAUGE_STORE`: the port's adapter, WAL mode, a busy timeout, versioned migrations. |
 | `rsb-gauge-cli` | exempt | The headless binary `gauge`. Every command the app will have exists here first. No key. |
@@ -45,8 +45,8 @@ Gauge holds no rule content of its own beyond test fixtures.
 ## Run
 
 ```sh
-cargo run -p rsb-gauge-cli -- registry lint <dir>   # load every rule under <dir> and report problems
-cargo run -p rsb-gauge-cli -- registry schema       # print the JSON Schema for a rule file
+cargo run -p rsb-gauge-cli -- registry lint <root>                # load <root>/rules and <root>/heuristics and report problems
+cargo run -p rsb-gauge-cli -- registry schema rule|heuristic      # print the JSON Schema for a rule or heuristic file
 cargo run -p agent-driver -- check --repo <owner/name> --issue <n>   # print an issue's title with a read-only token
 ```
 

@@ -109,13 +109,25 @@ impl FromStr for Target {
 
 #[derive(Subcommand)]
 enum RegistryCommand {
-    /// Load every rule under a directory and report what is wrong with it.
+    /// Load every rule and heuristic under a registry root and report what
+    /// is wrong with them.
     Lint {
-        /// The registry root, such as `../agent-registry/rules`.
+        /// The registry root, holding `rules/` and `heuristics/`, such as
+        /// `../agent-registry`.
         root: PathBuf,
     },
-    /// Print the JSON Schema for one rule file.
-    Schema,
+    /// Print the JSON Schema for one rule or one heuristic file.
+    Schema {
+        #[arg(value_enum)]
+        kind: SchemaKind,
+    },
+}
+
+/// Which file's schema `registry schema` prints.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SchemaKind {
+    Rule,
+    Heuristic,
 }
 
 /// Why a command failed. The command name is not part of the error; the
@@ -148,7 +160,7 @@ fn main() -> ExitCode {
     let name = match &cli.command {
         Command::Registry { command } => match command {
             RegistryCommand::Lint { .. } => "registry lint",
-            RegistryCommand::Schema => "registry schema",
+            RegistryCommand::Schema { .. } => "registry schema",
         },
         Command::Store { command } => match command {
             StoreCommand::Init { .. } => "store init",
@@ -192,7 +204,10 @@ fn run(command: Command) -> Result<Outcome, Error> {
     match command {
         Command::Registry { command } => match command {
             RegistryCommand::Lint { root } => lint(&root),
-            RegistryCommand::Schema => schema(),
+            RegistryCommand::Schema { kind } => schema(match kind {
+                SchemaKind::Rule => rsb_gauge_schema::Kind::Rule,
+                SchemaKind::Heuristic => rsb_gauge_schema::Kind::Heuristic,
+            }),
         },
         Command::Store { command } => match command {
             StoreCommand::Init { repos } => init(&rsb_gauge_store::path_from_env()?, &repos),
@@ -393,8 +408,9 @@ fn lint(root: &std::path::Path) -> Result<Outcome, Error> {
     let findings = rsb_gauge_schema::lint(&registry);
     let mut lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
     lines.push(format!(
-        "{} rules, {} findings",
-        registry.entries.len(),
+        "{} rules, {} heuristics, {} findings",
+        registry.rules.len(),
+        registry.heuristics.len(),
         findings.len()
     ));
     Ok(Outcome {
@@ -403,8 +419,8 @@ fn lint(root: &std::path::Path) -> Result<Outcome, Error> {
     })
 }
 
-fn schema() -> Result<Outcome, Error> {
-    let text = serde_json::to_string_pretty(&rsb_gauge_schema::schema())?;
+fn schema(kind: rsb_gauge_schema::Kind) -> Result<Outcome, Error> {
+    let text = serde_json::to_string_pretty(&rsb_gauge_schema::schema(kind))?;
     Ok(Outcome {
         lines: vec![text],
         passed: true,
@@ -439,12 +455,12 @@ mod tests {
     fn a_report_walks_the_source_chain_to_the_leaf() {
         let io = std::io::Error::from(std::io::ErrorKind::NotFound);
         let err = Error::Registry(RegistryError::Read {
-            path: "rules/errors/ERR-1.toml".into(),
+            path: "rules/rl-0001.toml".into(),
             source: io,
         });
         assert_eq!(
             report("registry lint", &err),
-            "registry lint: registry: cannot read rules/errors/ERR-1.toml: entity not found"
+            "registry lint: registry: cannot read rules/rl-0001.toml: entity not found"
         );
     }
 

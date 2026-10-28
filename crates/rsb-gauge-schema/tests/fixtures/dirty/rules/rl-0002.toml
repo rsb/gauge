@@ -1,11 +1,10 @@
-id = "ERR-20"
+id = "rl-0002"
 statement = "Read every Result. Check it or return it."
 why = ""
-check_class = "mechanical"
-default_level = "error"
+check_class = "exact"
+consequence = "business"
 
 [scope]
-tree = "rsb/web"
 paths = ["packages/**"]
 
 [lifecycle]

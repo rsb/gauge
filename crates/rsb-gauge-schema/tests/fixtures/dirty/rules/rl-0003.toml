@@ -1,0 +1,12 @@
+id = "rl-0003"
+statement = "A migration, once merged, is never edited."
+why = "A merged migration has run somewhere; editing it forks the schema."
+check_class = "exact"
+consequence = "business"
+
+[scope]
+paths = ["packages/db/migrations/**"]
+
+[lifecycle]
+state = "retired"
+since = "19-10-2026"
