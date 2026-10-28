@@ -9,7 +9,7 @@ contracts:
     - from: S-0001/1
       shape: workspace, error convention, layering check green
     - from: S-0001/2
-      shape: store URL and credential for the `gauge` schema role
+      shape: the store directory `~/.local/state/gauge/` and the `GAUGE_STORE` convention
   provides:
     - to: S-0001/5
       shape: >
@@ -25,7 +25,7 @@ contracts:
         scenarios.
 seams:
   - decide: table tests over the rows this ticket owns
-  - tick: against the fakes and against Postgres in a container
+  - tick: against the fakes and against a SQLite store in a temporary file
   - kill harness: seeded random kill between port calls; same end state, no repeated event
   - live: one request on the shared store from the desktop
 ---
@@ -41,8 +41,15 @@ and scenarios to the same harness.
 
 ## Scope
 
-- Store schema v1: loop, request, flag, event. Migrations owned and
-  applied by the library's migration step; version recorded.
+- Store schema v1: loop, request, flag, event, in SQLite (a file at
+  `GAUGE_STORE`). Migrations owned and applied by the library's
+  migration step; version recorded. WAL mode and a busy timeout, since
+  the CLI writes request rows while a tick runs. SQL stays within what
+  Cloudflare's SQLite (Durable Objects, D1) supports: no extensions, no
+  pragmas the schema depends on, so the schema carries over at M5. The
+  store sits behind a port in `rsb-gauge-reconcile`; the SQLite adapter
+  is its only implementation at M1. "Store unreachable" means the file
+  is missing, locked past the timeout, or fails its integrity check.
 - CLI: `gauge run <repo>#<issue> [--agent claude|codex]` writes a
   request row (the `--agent` value is stored; 10 uses it);
   `gauge pause|drain [<loop>]` write flags; `gauge runs` lists loops
@@ -59,6 +66,12 @@ and scenarios to the same harness.
   during a tick sets a flag so one more tick follows (the flag only;
   systemd wiring is 11).
 - Kill harness skeleton.
+- Store selection is explicit: the driver and CLI read the store's
+  file path from the environment (`GAUGE_STORE`), never a default. The repos
+  a driver may tick come from config tied to the store (live: the
+  `repos.toml` repos; dev: a scratch repo only), and a request for a
+  repo outside that list is refused, so a dev tick can never open a
+  loop on a live repo (ticket 2, two stores).
 - `agent-driver tick --observe` (decision 8, effects record §9):
   runs observation and `decide` for every loop, prints the situation,
   the action it would take and any orphan, and acts on nothing. It is
@@ -67,8 +80,8 @@ and scenarios to the same harness.
 
 ## Out of scope
 
-GitHub, lockfile observation (05). Attempts (06). Leases (M5). SQLite
-(not M1).
+GitHub, lockfile observation (05). Attempts (06). Leases and the
+shared Cloudflare store (M5).
 
 ## Criteria
 

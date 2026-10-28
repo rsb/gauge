@@ -131,7 +131,7 @@ The cadences nest like cascade control (Ref 13): each outer loop sets the refere
 
 The layer under all four. Append and compare-and-swap only. Entities are in section 3.5.
 
-- **Store schema.** Versioned, owned by the library. Postgres on a separate Supabase project is truth; local SQLite is a cache (D5).
+- **Store schema.** Versioned, owned by the library. SQLite throughout (D5 as revised 2026-10-28): at M1 a file on the desktop; from M5 a shared store behind the Worker on Cloudflare (Durable Objects or D1), designed in its own session, with the same schema.
 - **History rows** (3.6) and **events with a cursor** (3.7). The database is the live view.
 - **JSONL export.** Written into git by the record step. Git is the record (Ref 08).
 - **Judgement cache.** Recorded outputs addressed by key (6.1).
@@ -439,7 +439,7 @@ Milestones follow the Handoff (M0 to M7). Weeks are the Handoff's sizes and are 
 | Milestone | Gauge must deliver | Responsibilities | Acceptance |
 |---|---|---|---|
 | **M0 Align** (this week) | Nothing built. A hand-run loop that leaves the world-state Gauge will later adopt: branch, PR, `scorecard` check, sticky comment, labels, a history row (SP 10 "hand-run loop"). The verdict is read before the diff and measurement starts | none | gordana-milan |
-| **M1 Driver's thin loop** (weeks 2 to 3) | `agent-driver` tick from issue label to posted verdict with CI as the sensor. Store on Supabase. Reconciler core, the situation table as the starting set, natural keys for posting, the Claude adapter, requests and flags, events. Kill test passes (single machine) | R15, R16 (Claude), R17 (`run`, `pause`, `drain`, `resume`, `abort`, `runs`, `events`), R18 (events), Record subset | gordana-milan |
+| **M1 Driver's thin loop** (weeks 2 to 3) | `agent-driver` tick from issue label to posted verdict with CI as the sensor. Store as a SQLite file on the desktop. Reconciler core, the situation table as the starting set, natural keys for posting, the Claude adapter, requests and flags, events. Kill test passes (single machine) | R15, R16 (Claude), R17 (`run`, `pause`, `drain`, `resume`, `abort`, `runs`, `events`), R18 (events), Record subset | gordana-milan |
 | **M2 Measure** (weeks 4 to 6) | Registry parser and linter, snapshot, classifier, cloudflare adapters, scorecard arithmetic with baseline and ratchet, history schema, `gauge check` replacing the CI scripts. Three Lab cases graded, each shown to fail its oracle. The first real number: recall of the mechanical tier on known slop (SP 10) | R01, R04, R05, R06, R09, R10, R13 (verify and grade), exceptions from R08 **(proposal)** | gordana-milan |
 | **M3 Define** (weeks 7 to 9; may slip past January) | Renders with hashes and the directive budget. Profiles, `gauge plan`, the lockfile. Drift as findings. Apply in the driver. Lumen minted from `base, desktop, rust-linux, lumen` | R02, R03 (plan and apply) | Lumen is the first minted repo; gordana-milan adopts renders |
 | **M4 Learn** (after January) | Labels, statistics, lifecycle, regenerated renders, judgement lenses, adjudication and verification. Codex adapter by M4 **(proposal)** so per-agent statistics are meaningful from the start | R07, R08 (rest), R11, R12, R16 (Codex) | gordana-milan |
