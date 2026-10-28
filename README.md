@@ -21,16 +21,17 @@ crate boundary: see `engineering/layers.md`.
 
 | Crate | Layer | Holds |
 |---|---|---|
-| `rsb-gauge-schema` | 0 | The rule types, the TOML loader, the JSON Schema, the registry linter. |
+| `rsb-gauge-schema` | 0 | The rule types, the TOML loader, the JSON Schema, the registry linter, and `repos.toml` with its closed set of roles. |
+| `rsb-gauge-reconcile` | 1 | Observation, situation, action and event as closed enums; the pure `decide` with first-match precedence; the store port and its in-memory fake. No I/O. |
+| `rsb-gauge-store` | 2 | The store as a SQLite file at `GAUGE_STORE`: the port's adapter, WAL mode, a busy timeout, versioned migrations. |
 | `rsb-gauge-cli` | exempt | The headless binary `gauge`. Every command the app will have exists here first. No key. |
-| `agent-driver` | exempt | The binary that holds the GitHub App key, mints narrowed tokens and talks to GitHub as the App. The only crate allowed a GitHub or HTTP client. |
+| `agent-driver` | exempt | The binary that holds the GitHub App key, mints narrowed tokens and talks to GitHub as the App, and runs the tick. The only crate allowed a GitHub or HTTP client. |
 | `xtask` | exempt | `cargo xtask layers` (layers and custody), `cargo xtask launch` (custody in source) and `cargo xtask errors`. |
 
 Planned, each joining the layer table when it is created:
 
 | Crate | Layer | Holds |
 |---|---|---|
-| `rsb-gauge-reconcile` | 1 | Observation, situation, action and event; the pure `decide` (S-0001 ticket 03). |
 | `rsb-gauge-render` | 1 | Projections into `AGENTS.md`, `.claude/rules`, ESLint and Clippy tables. |
 | `rsb-gauge-checks` | 1 | Check adapters and SARIF findings. |
 | `rsb-gauge-score` | 2 | Scorecards and history. |
@@ -49,10 +50,25 @@ cargo run -p rsb-gauge-cli -- registry schema       # print the JSON Schema for 
 cargo run -p agent-driver -- check --repo <owner/name> --issue <n>   # print an issue's title with a read-only token
 ```
 
+The loop. Every command reads the store file from `GAUGE_STORE`; nothing
+defaults it. A store is tied at creation to the `repos.toml` whose repos its
+ticks may open loops on: `agent-registry`'s for the live store, a file
+listing only a scratch repo for a dev store.
+
+```sh
+export GAUGE_STORE=~/.local/state/gauge/live.sqlite
+gauge store init --repos ../agent-registry/repos.toml   # create the store, once
+gauge run <repo>#<issue> [--agent claude|codex]         # write a run request
+gauge pause [<loop>]  /  gauge drain [<loop>]           # write a flag
+agent-driver tick [--observe]                           # one pass; --observe writes nothing
+gauge runs                                              # loops and their last situation
+gauge events --since <seq> [--follow]                   # the event log by cursor
+```
+
 `agent-driver` reads its App id and key path from
 `~/.config/rsb/agent-driver/config.toml`.
 
-Status: S-0001, the thin loop, ticket 01 (workspace and custody).
+Status: S-0001, the thin loop, ticket 03 (a run request opens a loop).
 
 Related repositories, siblings under `~/code/software/rsb/factory/`:
 `../agent-registry` holds the standards shared by the rsb apps and the
