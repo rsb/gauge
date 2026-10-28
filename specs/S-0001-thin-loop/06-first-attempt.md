@@ -74,6 +74,27 @@ requirement 1).
   `--agent` is stored; `codex` is refused with a reason until its
   adapter exists.
 
+## Q17: no `--bare` (decided 2026-10-28)
+
+The Claude adapter runs `claude -p <prompt> --output-format json
+--model <model>` and does not pass `--bare`. Two reasons, each enough:
+
+- `--bare` reads Anthropic auth only from `ANTHROPIC_API_KEY` or an
+  `apiKeyHelper`, never OAuth. The box signs in with the OAuth sign-in
+  copied from the shared auth volume, so a bare run cannot authenticate,
+  and making it able to would put an API key in the box's environment:
+  a new credential to keep, which D7 counts against the box.
+- `--bare` skips `CLAUDE.md` auto-discovery, and the one-line
+  `CLAUDE.md` pointer is how the agent finds the project's `AGENTS.md`
+  (its check commands, which `implement` step 3 needs).
+
+What `--bare` would buy is already given by the box: the home is a fresh
+tmpfs, so no user hooks, plugins or memory exist, and the managed
+settings are baked into the image. Skills are not the reason either
+way: `claude --help` says `--bare` still resolves `/skill-name`, but
+whether that covers the skills the entrypoint links into
+`~/.claude/skills` was not tested, since the two reasons above settle it.
+
 ## Out of scope
 
 Consuming the outbox, pushing, PRs (07). Resume briefs (07, 08).

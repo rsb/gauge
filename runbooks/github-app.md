@@ -103,6 +103,21 @@ Verified for ticket S-0001/4 on 2026-10-28:
 - Inside agent-box (`HOME=/home/node`): no `~/.config/rsb`, no
   `/home/rsb`, and no `app.pem` anywhere on the filesystem.
 
+Repeated for ticket S-0001/6 on 2026-10-28, after agent-box PR A
+(`de5eed5`, the driver launch), inside a driver-shaped launch (the same
+compose files, project name shape, mounts and entrypoint as `drive.sh`,
+with a shell check in place of `claude -p`):
+
+- No `~/.config/rsb`, no `/home/rsb`, and no `app.pem` anywhere on the
+  filesystem.
+- No mount from under a `.config` directory, and no token in the
+  environment.
+- The only host paths were the attempt's `repo`, `brief.json` and
+  `outbox`, and the three skills, read-only.
+
+The key and the installation had not changed, so the first two checks
+were not repeated.
+
 Repeat these after any change to the installation, the key's location
 or agent-box's mounts.
 
