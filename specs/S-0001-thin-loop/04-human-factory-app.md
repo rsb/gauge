@@ -56,3 +56,5 @@ Done 2026-10-28: App id 5352731, installation 172257129, key at
 `~/.config/rsb/agent-driver/app.pem`; checks recorded in
 `runbooks/github-app.md`. Workflows permission left at No access, so no
 attempt can change the `scorecard` workflow.
+
+The App was renamed from `rsb-agent-bot` to `rsb-agent` on 2026-10-28.

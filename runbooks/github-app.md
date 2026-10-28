@@ -10,11 +10,16 @@ One App serves every repo the driver works on (decided 2026-10-27).
 
 | | |
 |---|---|
-| App | `rsb-agent-bot`, owned by the `rsb` account |
+| App | `rsb-agent`, owned by the `rsb` account |
 | App id | 5352731 |
 | Installation id | 172257129 (the `rsb` account) |
-| Settings | github.com/settings/apps/rsb-agent-bot |
+| Settings | github.com/settings/apps/rsb-agent |
+| Bot user | `rsb-agent[bot]`, user id 343757340 |
 | Installation | github.com/settings/installations/172257129 |
+
+Renamed from `rsb-agent-bot` to `rsb-agent` on 2026-10-28, so its bot
+login reads `rsb-agent[bot]`; the App id, installation and key did not
+change.
 
 Only `agent-driver` holds the key. No agent holds a GitHub credential,
 in the box or at the desk, and the `gauge` CLI holds none either; the
@@ -52,8 +57,16 @@ config at `~/.config/rsb/agent-driver/config.toml`:
 [app]
 id = 5352731
 
+[attempt]
+agent_name = "rsb-agent[bot]"
+agent_email = "343757340+rsb-agent[bot]@users.noreply.github.com"
+
 [repos."rsb/ref-rsb-serverless-stack"]
 ```
+
+`agent_name` and `agent_email` are the bot identity the driver commits
+as; the email is the bot user's noreply address, so GitHub attributes
+the commits to `rsb-agent[bot]`.
 
 The driver refuses a key file that others can read. The path is outside
 every checkout. agent-box mounts no host path but its bundles and its
