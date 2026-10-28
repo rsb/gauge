@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rsb_gauge_reconcile::store::{
-    Agent, Applied, Event, EventKind, Flag, FlagKind, LabelKey, Loop, LoopId, LoopState,
-    LoopTicket, NewRequest, Request, RequestId, RequestState, Snapshot, Store, Write,
+    Agent, Applied, Attempt, AttemptCause, AttemptEnd, Event, EventKind, Flag, FlagKind,
+    IssuedBrief, LabelKey, Loop, LoopId, LoopState, LoopTicket, NewAttempt, NewRequest, Request,
+    RequestId, RequestState, SkillsSource, Snapshot, Store, Write,
 };
 use rsb_gauge_reconcile::{ParkReason, ReconcileError, Situation};
 use rusqlite::{Connection, OpenFlags, OptionalExtension as _, Transaction, TransactionBehavior};
@@ -31,6 +32,7 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_loops.sql")),
     (2, include_str!("../migrations/0002_world.sql")),
+    (3, include_str!("../migrations/0003_attempts.sql")),
 ];
 
 /// The setting that ties the store to the `repos.toml` whose repos its ticks
@@ -389,6 +391,8 @@ impl Store for SqliteStore {
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
+        let attempts = select_attempts(&tx)?;
+        let briefs = select_briefs(&tx)?;
         let trigger = tx.query_row("SELECT count FROM tick_trigger WHERE id = 1", [], |r| {
             r.get::<_, i64>(0)
         })?;
@@ -397,6 +401,8 @@ impl Store for SqliteStore {
             requests,
             loops,
             flags,
+            attempts,
+            briefs,
             trigger: uint("trigger", trigger)?,
         })
     }
@@ -529,6 +535,108 @@ impl Store for SqliteStore {
                     (situation.as_str(), loop_id.0),
                 )?;
                 Applied::Updated
+            }
+            Write::IssueBrief {
+                loop_id,
+                attempt,
+                brief,
+            } => {
+                let run = select_loop(&tx, *loop_id)?;
+                let issued: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM brief WHERE loop_id = ?1 AND attempt = ?2)",
+                    (loop_id.0, attempt),
+                    |r| r.get(0),
+                )?;
+                if issued {
+                    return Ok(Applied::Noop);
+                }
+                tx.execute(
+                    "INSERT INTO brief (loop_id, attempt, brief, issued_at) VALUES (?1, ?2, ?3, ?4)",
+                    (loop_id.0, attempt, serde_json::to_string(brief)?, at),
+                )?;
+                Applied::Recorded(record(
+                    &tx,
+                    EventKind::BriefIssued,
+                    at,
+                    &run.repo,
+                    run.issue,
+                    Some(*loop_id),
+                    payload,
+                )?)
+            }
+            Write::StartAttempt { loop_id, attempt } => {
+                let run = select_loop(&tx, *loop_id)?;
+                let started: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM attempt WHERE loop_id = ?1 AND number = ?2)",
+                    (loop_id.0, attempt.number),
+                    |r| r.get(0),
+                )?;
+                if started {
+                    return Ok(Applied::Noop);
+                }
+                tx.execute(
+                    "INSERT INTO attempt (loop_id, number, unit, agent, model, started_at,
+                         runtime_bound, skills_commit, skills_clean)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        loop_id.0,
+                        attempt.number,
+                        attempt.unit,
+                        attempt.agent.as_str(),
+                        attempt.model,
+                        attempt.started_at,
+                        int("runtime bound", attempt.runtime_bound)?,
+                        attempt.skills.commit,
+                        attempt.skills.clean,
+                    ],
+                )?;
+                Applied::Recorded(record(
+                    &tx,
+                    EventKind::AttemptStarted,
+                    at,
+                    &run.repo,
+                    run.issue,
+                    Some(*loop_id),
+                    payload,
+                )?)
+            }
+            Write::EndAttempt {
+                loop_id,
+                attempt,
+                end,
+            } => {
+                let run = select_loop(&tx, *loop_id)?;
+                let ended: Option<i64> = tx
+                    .query_row(
+                        "SELECT ended_at FROM attempt WHERE loop_id = ?1 AND number = ?2",
+                        (loop_id.0, attempt),
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .ok_or(ReconcileError::NoAttempt(*loop_id, *attempt))?;
+                if ended.is_some() {
+                    return Ok(Applied::Noop);
+                }
+                tx.execute(
+                    "UPDATE attempt SET ended_at = ?1, exit_code = ?2, cause = ?3
+                     WHERE loop_id = ?4 AND number = ?5",
+                    (
+                        end.at,
+                        end.exit,
+                        end.cause.map(AttemptCause::as_str),
+                        loop_id.0,
+                        attempt,
+                    ),
+                )?;
+                Applied::Recorded(record(
+                    &tx,
+                    EventKind::AttemptEnded,
+                    at,
+                    &run.repo,
+                    run.issue,
+                    Some(*loop_id),
+                    payload,
+                )?)
             }
             Write::Failure {
                 repo,
@@ -665,6 +773,123 @@ fn label_exists(conn: &Connection, key: &LabelKey) -> Result<bool, StoreError> {
         ),
         |r| r.get(0),
     )?)
+}
+
+type AttemptRow = (
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    bool,
+    Option<i64>,
+    Option<i32>,
+    Option<String>,
+);
+
+fn number(what: &'static str, value: i64) -> Result<u32, StoreError> {
+    u32::try_from(value).map_err(|_| StoreError::Range {
+        what,
+        value: value.to_string(),
+    })
+}
+
+/// Every attempt of a loop that is not closed, by (loop, number).
+fn select_attempts(conn: &Connection) -> Result<Vec<Attempt>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT a.loop_id, a.number, a.unit, a.agent, a.model, a.started_at, a.runtime_bound,
+             a.skills_commit, a.skills_clean, a.ended_at, a.exit_code, a.cause
+         FROM attempt a JOIN loop l ON l.id = a.loop_id
+         WHERE l.state <> 'closed' ORDER BY a.loop_id, a.number",
+    )?;
+    let rows = stmt
+        .query_map([], |r| -> rusqlite::Result<AttemptRow> {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+                r.get(11)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(
+            |(
+                loop_id,
+                n,
+                unit,
+                agent,
+                model,
+                started_at,
+                bound,
+                commit,
+                clean,
+                ended,
+                exit,
+                cause,
+            )| {
+                let end = match ended {
+                    Some(at) => Some(AttemptEnd {
+                        at,
+                        exit,
+                        cause: parse_opt::<AttemptCause>(cause)?,
+                    }),
+                    None => None,
+                };
+                Ok(Attempt {
+                    loop_id: LoopId(loop_id),
+                    started: NewAttempt {
+                        number: number("attempt number", n)?,
+                        unit,
+                        agent: parse(&agent)?,
+                        model,
+                        started_at,
+                        runtime_bound: uint("runtime bound", bound)?,
+                        skills: SkillsSource { commit, clean },
+                    },
+                    end,
+                })
+            },
+        )
+        .collect()
+}
+
+/// Every brief issued for a loop that is not closed, by (loop, attempt).
+fn select_briefs(conn: &Connection) -> Result<Vec<IssuedBrief>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT b.loop_id, b.attempt, b.brief
+         FROM brief b JOIN loop l ON l.id = b.loop_id
+         WHERE l.state <> 'closed' ORDER BY b.loop_id, b.attempt",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(loop_id, attempt, brief)| {
+            Ok(IssuedBrief {
+                loop_id: LoopId(loop_id),
+                attempt: number("brief attempt", attempt)?,
+                brief: serde_json::from_str(&brief)?,
+            })
+        })
+        .collect()
 }
 
 fn select_loop(conn: &Connection, id: LoopId) -> Result<Loop, StoreError> {

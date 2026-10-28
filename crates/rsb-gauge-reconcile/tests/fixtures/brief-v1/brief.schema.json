@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brief/v1/brief.schema.json",
+  "title": "Brief v1",
+  "description": "What the custodian tells an agent for one attempt: run/brief.json. The brief's issue numbers and branch are the only targets an outbox may name. It holds no credential of any kind.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "repo", "base_sha", "base_branch", "branch", "ticket_path",
+    "spec", "issues", "attempt", "kind", "outbox_path", "runtime_bound",
+    "allowed_effects"
+  ],
+  "properties": {
+    "schema": { "const": "brief/v1" },
+    "repo": {
+      "description": "The repo's name in repos.toml.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "base_sha": {
+      "description": "The commit the loop branch starts from. The checked-out branch must contain it.",
+      "$ref": "#/$defs/sha"
+    },
+    "base_branch": {
+      "description": "The branch the loop's PR merges into. A pr-open entry's base must equal it.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+    },
+    "branch": {
+      "description": "The loop branch. The agent commits here and never creates another.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+    },
+    "ticket_path": {
+      "description": "The ticket file, relative to the repo root. Its spec is spec.md beside it.",
+      "type": "string",
+      "pattern": "^specs/S-[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*/[0-9]{2}-[a-z0-9]+(-[a-z0-9]+)*\\.md$"
+    },
+    "spec": {
+      "type": "string",
+      "pattern": "^S-[0-9]{4}$"
+    },
+    "issues": {
+      "description": "The issue numbers for `Refs #n` in commits and `Closes #n` in the PR body. Ticket files carry none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["refs", "closes"],
+      "properties": {
+        "refs": { "$ref": "#/$defs/issue_numbers" },
+        "closes": { "$ref": "#/$defs/issue_numbers" }
+      }
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "kind": { "enum": ["fresh", "resume"] },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cause", "from_head", "last_verdict"],
+      "properties": {
+        "cause": {
+          "description": "Why the previous attempt failed, from the attempt causes. Null when it handed back and the verdict sent the work back; `last_verdict` then says why.",
+          "enum": [
+            "exited_nonzero", "timed_out", "no_outbox", "intent_lost", "work_lost", null
+          ]
+        },
+        "from_head": {
+          "description": "The head to continue from. For `intent_lost`, the pushed head to produce the hand-back from.",
+          "$ref": "#/$defs/sha"
+        },
+        "last_verdict": {
+          "description": "The last verdict on the PR head, or null. Its fields are defined with the CI sensor (S-0001/8).",
+          "type": ["object", "null"]
+        }
+      },
+      "if": { "properties": { "cause": { "const": null } } },
+      "then": { "properties": { "last_verdict": { "type": "object" } } }
+    },
+    "outbox_path": {
+      "description": "The absolute path of the outbox directory, as the agent sees it.",
+      "type": "string",
+      "pattern": "^/"
+    },
+    "runtime_bound": {
+      "description": "Seconds the attempt may run before it is stopped.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "allowed_effects": {
+      "description": "The outbox kinds this attempt may write. Any other kind rejects the whole outbox.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "pr-open", "issue-comment", "criteria-tick", "deviation",
+          "review-findings", "flagged-for-human", "blocked"
+        ]
+      }
+    }
+  },
+  "if": {
+    "required": ["kind"],
+    "properties": { "kind": { "const": "resume" } }
+  },
+  "then": { "required": ["resume"] },
+  "else": { "not": { "required": ["resume"] } },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "issue_numbers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1 }
+    }
+  }
+}

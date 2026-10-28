@@ -2,10 +2,11 @@
 
 #![cfg(test)]
 
-use rsb_gauge_reconcile::store::{Agent, LoopId, LoopState, RequestId};
+use rsb_gauge_reconcile::store::{Agent, AttemptCause, AttemptEnd, LoopId, LoopState, RequestId};
 use rsb_gauge_reconcile::{
-    Action, Decision, IssueObservation, LoopSeen, Observation, ParkReason, ROWS, Refusal,
-    RequestSeen, Situation, TicketCause, TicketSeen, WorldSeen, decide,
+    Action, AttemptSeen, Decision, IssueObservation, LoopSeen, Observation, ParkReason, ROWS,
+    RecordedSeen, Refusal, RequestSeen, Situation, TicketCause, TicketSeen, UnitSeen, WorldSeen,
+    decide,
 };
 use rsb_gauge_schema::Role;
 
@@ -77,8 +78,57 @@ fn run(state: LoopState) -> Option<LoopSeen> {
         id: LoopId(1),
         state,
         park: (state == LoopState::Parked).then_some(ParkReason::UnrecognizedState),
+        attempt: None,
     })
 }
+
+/// An open loop whose attempt 1 is in `unit`, recorded unless `recorded` is
+/// `None`.
+fn attempt(unit: UnitSeen, recorded: Option<RecordedSeen>, sealed: bool) -> IssueObservation {
+    attempt_in(LoopState::Open, unit, recorded, sealed)
+}
+
+fn attempt_in(
+    state: LoopState,
+    unit: UnitSeen,
+    recorded: Option<RecordedSeen>,
+    sealed: bool,
+) -> IssueObservation {
+    let mut run = run(state);
+    if let Some(run) = run.as_mut() {
+        run.attempt = Some(AttemptSeen {
+            number: 1,
+            brief: true,
+            recorded,
+            unit,
+            sealed,
+        });
+    }
+    IssueObservation { run, ..issue() }
+}
+
+fn recorded(past_bound: bool) -> Option<RecordedSeen> {
+    Some(RecordedSeen {
+        past_bound,
+        end: None,
+    })
+}
+
+fn ended(cause: Option<AttemptCause>) -> Option<RecordedSeen> {
+    Some(RecordedSeen {
+        past_bound: true,
+        end: Some(AttemptEnd {
+            at: 0,
+            exit: None,
+            cause,
+        }),
+    })
+}
+
+const START_1: Decision = Decision {
+    situation: Situation::AttemptDue,
+    action: Action::StartAttempt { attempt: 1 },
+};
 
 fn decision(situation: Situation, action: Action) -> Decision {
     Decision { situation, action }
@@ -225,11 +275,119 @@ fn the_table() {
             OPEN,
         ),
         (
-            "10 an open loop matches no row yet",
+            "N6 an open loop with no attempt starts attempt 1",
             IssueObservation {
                 run: run(LoopState::Open),
                 ..issue()
             },
+            START_1,
+        ),
+        (
+            "N6 a brief issued, no unit, no record: start it (kill point 1)",
+            attempt(UnitSeen::Absent, None, false),
+            START_1,
+        ),
+        (
+            "N6 a unit started, not recorded: start it, which records it",
+            attempt(UnitSeen::Running, None, false),
+            START_1,
+        ),
+        (
+            "1 running within its bound waits",
+            attempt(UnitSeen::Running, recorded(false), false),
+            decision(Situation::AttemptRunning, Action::Wait {}),
+        ),
+        (
+            "N2 running past its bound is stopped, timed_out",
+            attempt(UnitSeen::Running, recorded(true), false),
+            decision(
+                Situation::AttemptOverBound,
+                Action::StopAttempt {
+                    attempt: 1,
+                    cause: AttemptCause::TimedOut,
+                },
+            ),
+        ),
+        (
+            "N2 still running after its end was recorded is stopped again",
+            attempt(
+                UnitSeen::Running,
+                ended(Some(AttemptCause::TimedOut)),
+                false,
+            ),
+            decision(
+                Situation::AttemptOverBound,
+                Action::StopAttempt {
+                    attempt: 1,
+                    cause: AttemptCause::TimedOut,
+                },
+            ),
+        ),
+        (
+            "N13 exited non-zero with no sealed outbox: exited_nonzero",
+            attempt(UnitSeen::Exited { code: Some(2) }, recorded(false), false),
+            decision(
+                Situation::AttemptExited,
+                Action::EndAttempt {
+                    attempt: 1,
+                    exit: Some(2),
+                    cause: Some(AttemptCause::ExitedNonzero),
+                },
+            ),
+        ),
+        (
+            "N13 ended by a signal with no sealed outbox: exited_nonzero",
+            attempt(UnitSeen::Exited { code: None }, recorded(true), false),
+            decision(
+                Situation::AttemptExited,
+                Action::EndAttempt {
+                    attempt: 1,
+                    exit: None,
+                    cause: Some(AttemptCause::ExitedNonzero),
+                },
+            ),
+        ),
+        (
+            "N13 exited non-zero with a sealed outbox: no cause (07 reads it)",
+            attempt(UnitSeen::Exited { code: Some(1) }, recorded(false), true),
+            decision(
+                Situation::AttemptExited,
+                Action::EndAttempt {
+                    attempt: 1,
+                    exit: Some(1),
+                    cause: None,
+                },
+            ),
+        ),
+        (
+            "N13 exited zero: no cause",
+            attempt(UnitSeen::Exited { code: Some(0) }, recorded(false), false),
+            decision(
+                Situation::AttemptExited,
+                Action::EndAttempt {
+                    attempt: 1,
+                    exit: Some(0),
+                    cause: None,
+                },
+            ),
+        ),
+        (
+            "28 an ended attempt matches no row until ticket 07",
+            attempt(
+                UnitSeen::Exited { code: Some(2) },
+                ended(Some(AttemptCause::ExitedNonzero)),
+                false,
+            ),
+            PARK,
+        ),
+        (
+            "28 a recorded attempt whose unit is gone matches no row",
+            attempt(UnitSeen::Absent, recorded(false), false),
+            PARK,
+        ),
+        (
+            "28 a parked loop's running attempt is not touched by rows 1 to N6",
+            attempt_in(LoopState::Parked, UnitSeen::Running, recorded(true), false),
             PARK,
         ),
         (
@@ -322,7 +480,35 @@ fn refusal_comes_before_the_open_loop_check() {
 }
 
 #[test]
-fn drain_gates_only_attempt_starts_so_changes_no_decision_yet() {
+fn drain_holds_a_start_but_not_the_record_of_a_started_unit() {
+    let draining = |o: IssueObservation| {
+        decide(&Observation::Issue(IssueObservation {
+            draining: true,
+            ..o
+        }))
+    };
+    let wait = decision(Situation::Draining, Action::Wait {});
+    assert_eq!(
+        draining(IssueObservation {
+            run: run(LoopState::Open),
+            ..issue()
+        }),
+        wait
+    );
+    assert_eq!(draining(attempt(UnitSeen::Absent, None, false)), wait);
+    assert_eq!(draining(attempt(UnitSeen::Running, None, false)), START_1);
+    // What runs goes on: drain changes nothing for a recorded attempt.
+    for o in [
+        attempt(UnitSeen::Running, recorded(false), false),
+        attempt(UnitSeen::Running, recorded(true), false),
+        attempt(UnitSeen::Exited { code: Some(2) }, recorded(false), false),
+    ] {
+        assert_eq!(draining(o.clone()), decide(&Observation::Issue(o)));
+    }
+}
+
+#[test]
+fn drain_changes_no_decision_but_a_start() {
     let observations = [
         issue(),
         IssueObservation {
@@ -331,10 +517,6 @@ fn drain_gates_only_attempt_starts_so_changes_no_decision_yet() {
         },
         IssueObservation {
             request: request(Some(Role::Factory)),
-            ..issue()
-        },
-        IssueObservation {
-            run: run(LoopState::Open),
             ..issue()
         },
     ];
@@ -357,7 +539,10 @@ fn rows_are_in_table_order() {
     sorted.sort_unstable();
     assert_eq!(orders, sorted);
     let numbers: Vec<&str> = ROWS.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, ["13", "N1", "N11", "N12", "11"]);
+    assert_eq!(
+        numbers,
+        ["13", "N1", "N11", "N12", "11", "1", "N2", "N13", "N6", "14"]
+    );
 }
 
 #[test]

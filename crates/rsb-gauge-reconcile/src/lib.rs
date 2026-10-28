@@ -3,6 +3,8 @@
 //! the driver observes and acts, and the store adapter lives in
 //! `rsb-gauge-store`.
 
+pub mod adapter;
+pub mod brief;
 mod decide;
 mod error;
 mod memory;
@@ -16,7 +18,7 @@ pub use decide::{
 pub use error::ReconcileError;
 pub use memory::MemoryStore;
 pub use observation::{
-    IssueObservation, IssueRows, LoopSeen, Observation, RequestSeen, TicketCause, TicketSeen,
-    WorldSeen, issues,
+    AttemptSeen, AttemptWorld, IssueObservation, IssueRows, LoopSeen, Observation, RecordedSeen,
+    RequestSeen, TicketCause, TicketSeen, UnitSeen, WorldSeen, issues,
 };
 pub use store::Store;

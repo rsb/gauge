@@ -8,7 +8,10 @@ use std::fmt;
 use rsb_gauge_schema::Role;
 use serde::{Deserialize, Serialize};
 
-use crate::observation::{IssueObservation, Observation, TicketCause, TicketSeen};
+use crate::observation::{
+    AttemptSeen, IssueObservation, LoopSeen, Observation, TicketCause, TicketSeen, UnitSeen,
+};
+use crate::store::{AttemptCause, LoopState};
 use crate::vocabulary::vocabulary;
 
 vocabulary! {
@@ -27,6 +30,18 @@ vocabulary! {
         /// A run request on an eligible repo: it opens a loop, or is refused
         /// when the issue already has one that is not closed.
         RunRequested = "run_requested",
+        /// An attempt's unit runs within its runtime bound.
+        AttemptRunning = "attempt_running",
+        /// An attempt's unit runs past its runtime bound, or after its end
+        /// was recorded.
+        AttemptOverBound = "attempt_over_bound",
+        /// An attempt's unit exited and its end is not recorded.
+        AttemptExited = "attempt_exited",
+        /// An open loop whose current attempt has not started: none yet, or
+        /// a brief issued whose attempt is not recorded.
+        AttemptDue = "attempt_due",
+        /// A drain flag holds an attempt that would start.
+        Draining = "draining",
         /// No row matched.
         Unrecognized = "unrecognized",
     }
@@ -95,6 +110,22 @@ pub enum Action {
     Park {
         reason: ParkReason,
     },
+    /// Start attempt `attempt`: issue its brief, start its unit and record
+    /// it, each looked up first.
+    StartAttempt {
+        attempt: u32,
+    },
+    /// Record the attempt's end with `cause`, then stop its unit.
+    StopAttempt {
+        attempt: u32,
+        cause: AttemptCause,
+    },
+    /// Record the end of an attempt whose unit exited.
+    EndAttempt {
+        attempt: u32,
+        exit: Option<i32>,
+        cause: Option<AttemptCause>,
+    },
 }
 
 impl fmt::Display for Action {
@@ -104,6 +135,12 @@ impl fmt::Display for Action {
             Self::OpenLoop {} => f.write_str("open loop"),
             Self::Refuse { refusal } => write!(f, "refuse: {refusal}"),
             Self::Park { reason } => write!(f, "park {reason}"),
+            Self::StartAttempt { attempt } => write!(f, "start attempt {attempt}"),
+            Self::StopAttempt { attempt, cause } => write!(f, "stop attempt {attempt} ({cause})"),
+            Self::EndAttempt { attempt, cause, .. } => match cause {
+                Some(cause) => write!(f, "end attempt {attempt} ({cause})"),
+                None => write!(f, "end attempt {attempt}"),
+            },
         }
     }
 }
@@ -128,8 +165,12 @@ pub struct Row {
 /// The rows this build implements, in precedence order. The store-unreachable
 /// row comes before all of them and is not per issue: see [`decide`].
 ///
-/// Row 25 (14, drain) is a gate on rows 22 to 24, which start attempts; none
-/// exists before S-0001 ticket 06, so drain changes no decision yet.
+/// Row 25 (14, drain) is a gate on rows 22 to 24, which start attempts: row
+/// N6 starts nothing while draining, and the drain row then waits.
+///
+/// Rows 8, 9, N13 and 24 apply to an open loop only: rows 4 and 5 (parked,
+/// ticket 09) come before them, and until then a parked loop falls through
+/// to row 28 and stays parked.
 pub const ROWS: &[Row] = &[
     Row {
         order: 2,
@@ -155,6 +196,31 @@ pub const ROWS: &[Row] = &[
         order: 7,
         number: "11",
         rule: run_requested,
+    },
+    Row {
+        order: 8,
+        number: "1",
+        rule: attempt_running,
+    },
+    Row {
+        order: 9,
+        number: "N2",
+        rule: attempt_over_bound,
+    },
+    Row {
+        order: 9,
+        number: "N13",
+        rule: attempt_exited,
+    },
+    Row {
+        order: 24,
+        number: "N6",
+        rule: attempt_due,
+    },
+    Row {
+        order: 25,
+        number: "14",
+        rule: draining,
     },
 ];
 
@@ -249,5 +315,106 @@ fn run_requested(issue: &IssueObservation) -> Option<Decision> {
     Some(Decision {
         situation: Situation::RunRequested,
         action: Action::OpenLoop {},
+    })
+}
+
+/// The open loop and its current attempt, if any.
+fn open_loop(issue: &IssueObservation) -> Option<&LoopSeen> {
+    issue
+        .run
+        .as_ref()
+        .filter(|run| run.state == LoopState::Open)
+}
+
+/// The current attempt of an open loop, recorded and not ended.
+fn unended(issue: &IssueObservation) -> Option<&AttemptSeen> {
+    let attempt = open_loop(issue)?.attempt.as_ref()?;
+    attempt.recorded.as_ref()?.end.is_none().then_some(attempt)
+}
+
+/// Row 8 (1): the unit runs within its bound: wait.
+fn attempt_running(issue: &IssueObservation) -> Option<Decision> {
+    let attempt = unended(issue)?;
+    let within = attempt.recorded.as_ref().is_some_and(|r| !r.past_bound);
+    (attempt.unit == UnitSeen::Running && within).then_some(Decision {
+        situation: Situation::AttemptRunning,
+        action: Action::Wait {},
+    })
+}
+
+/// Row N2: the unit runs past its bound: record `timed_out` and stop it. A
+/// unit still running after its end was recorded, by a tick killed between
+/// the record and the stop, is stopped with the recorded cause.
+fn attempt_over_bound(issue: &IssueObservation) -> Option<Decision> {
+    let attempt = open_loop(issue)?.attempt.as_ref()?;
+    let recorded = attempt.recorded.as_ref()?;
+    if attempt.unit != UnitSeen::Running {
+        return None;
+    }
+    let cause = match &recorded.end {
+        None if recorded.past_bound => AttemptCause::TimedOut,
+        None => return None,
+        Some(end) => end.cause.unwrap_or(AttemptCause::Stopped),
+    };
+    Some(Decision {
+        situation: Situation::AttemptOverBound,
+        action: Action::StopAttempt {
+            attempt: attempt.number,
+            cause,
+        },
+    })
+}
+
+/// Row N13: the unit exited and its end is not recorded: record it, with
+/// `exited_nonzero` for a non-zero exit (or a signal) and no sealed outbox.
+/// An attempt that exited zero, or left a sealed outbox, has no cause: what
+/// it handed back is ticket 07's.
+fn attempt_exited(issue: &IssueObservation) -> Option<Decision> {
+    let attempt = unended(issue)?;
+    let UnitSeen::Exited { code } = attempt.unit else {
+        return None;
+    };
+    let cause = (code != Some(0) && !attempt.sealed).then_some(AttemptCause::ExitedNonzero);
+    Some(Decision {
+        situation: Situation::AttemptExited,
+        action: Action::EndAttempt {
+            attempt: attempt.number,
+            exit: code,
+            cause,
+        },
+    })
+}
+
+/// Row N6: an open loop with no attempt starts attempt 1, and one whose
+/// current brief is issued but whose attempt is not recorded (a tick killed
+/// between the two) starts it again: the start looks the unit up first.
+/// Gated by drain, unless the unit is already there to be recorded.
+fn attempt_due(issue: &IssueObservation) -> Option<Decision> {
+    let run = open_loop(issue)?;
+    let attempt = match &run.attempt {
+        None => 1,
+        Some(a) if a.recorded.is_none() => {
+            if issue.draining && a.unit == UnitSeen::Absent {
+                return None;
+            }
+            a.number
+        }
+        Some(_) => return None,
+    };
+    if issue.draining && run.attempt.is_none() {
+        return None;
+    }
+    Some(Decision {
+        situation: Situation::AttemptDue,
+        action: Action::StartAttempt { attempt },
+    })
+}
+
+/// Row 25 (14): a drain flag over a loop whose attempt would start: wait.
+fn draining(issue: &IssueObservation) -> Option<Decision> {
+    open_loop(issue)?;
+    issue.draining.then_some(Decision {
+        situation: Situation::Draining,
+        action: Action::Wait {},
     })
 }

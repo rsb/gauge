@@ -3,8 +3,8 @@
 
 use crate::ReconcileError;
 use crate::store::{
-    Agent, Applied, Event, Flag, LabelKey, Loop, LoopId, LoopState, NewRequest, Request, RequestId,
-    RequestState, Snapshot, Store, Write,
+    Agent, Applied, Attempt, Event, Flag, IssuedBrief, LabelKey, Loop, LoopId, LoopState,
+    NewRequest, Request, RequestId, RequestState, Snapshot, Store, Write,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub struct MemoryStore {
     requests: Vec<RequestRow>,
     loops: Vec<Loop>,
     flags: Vec<Flag>,
+    attempts: Vec<Attempt>,
+    briefs: Vec<IssuedBrief>,
     events: Vec<Event>,
     trigger: u64,
 }
@@ -89,12 +91,40 @@ impl MemoryStore {
             .find(|l| l.id == id)
             .ok_or(ReconcileError::NoLoop(id))
     }
+
+    fn loop_key(&self, id: LoopId) -> Result<(String, u64), ReconcileError> {
+        self.loops
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| (l.repo.clone(), l.issue))
+            .ok_or(ReconcileError::NoLoop(id))
+    }
+
+    fn not_closed(&self, id: LoopId) -> bool {
+        self.loops
+            .iter()
+            .any(|l| l.id == id && l.state != LoopState::Closed)
+    }
 }
 
 impl Store for MemoryStore {
     type Error = ReconcileError;
 
     fn snapshot(&self) -> Result<Snapshot, Self::Error> {
+        let mut attempts: Vec<Attempt> = self
+            .attempts
+            .iter()
+            .filter(|a| self.not_closed(a.loop_id))
+            .cloned()
+            .collect();
+        attempts.sort_by_key(|a| (a.loop_id, a.started.number));
+        let mut briefs: Vec<IssuedBrief> = self
+            .briefs
+            .iter()
+            .filter(|b| self.not_closed(b.loop_id))
+            .cloned()
+            .collect();
+        briefs.sort_by_key(|b| (b.loop_id, b.attempt));
         Ok(Snapshot {
             requests: self
                 .requests
@@ -109,6 +139,8 @@ impl Store for MemoryStore {
                 .cloned()
                 .collect(),
             flags: self.flags.clone(),
+            attempts,
+            briefs,
             trigger: self.trigger,
         })
     }
@@ -194,6 +226,59 @@ impl Store for MemoryStore {
                 }
                 run.situation = Some(*situation);
                 Ok(Applied::Updated)
+            }
+            Write::IssueBrief {
+                loop_id,
+                attempt,
+                brief,
+            } => {
+                let (repo, issue) = self.loop_key(*loop_id)?;
+                if self
+                    .briefs
+                    .iter()
+                    .any(|b| b.loop_id == *loop_id && b.attempt == *attempt)
+                {
+                    return Ok(Applied::Noop);
+                }
+                self.briefs.push(IssuedBrief {
+                    loop_id: *loop_id,
+                    attempt: *attempt,
+                    brief: brief.clone(),
+                });
+                Ok(self.record(write, at, &repo, issue, Some(*loop_id), payload))
+            }
+            Write::StartAttempt { loop_id, attempt } => {
+                let (repo, issue) = self.loop_key(*loop_id)?;
+                if self
+                    .attempts
+                    .iter()
+                    .any(|a| a.loop_id == *loop_id && a.started.number == attempt.number)
+                {
+                    return Ok(Applied::Noop);
+                }
+                self.attempts.push(Attempt {
+                    loop_id: *loop_id,
+                    started: attempt.clone(),
+                    end: None,
+                });
+                Ok(self.record(write, at, &repo, issue, Some(*loop_id), payload))
+            }
+            Write::EndAttempt {
+                loop_id,
+                attempt,
+                end,
+            } => {
+                let (repo, issue) = self.loop_key(*loop_id)?;
+                let row = self
+                    .attempts
+                    .iter_mut()
+                    .find(|a| a.loop_id == *loop_id && a.started.number == *attempt)
+                    .ok_or(ReconcileError::NoAttempt(*loop_id, *attempt))?;
+                if row.end.is_some() {
+                    return Ok(Applied::Noop);
+                }
+                row.end = Some(end.clone());
+                Ok(self.record(write, at, &repo, issue, Some(*loop_id), payload))
             }
             Write::Failure {
                 repo,

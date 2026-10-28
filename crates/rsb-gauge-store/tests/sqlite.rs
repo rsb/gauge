@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rsb_gauge_reconcile::store::{
-    Agent, Applied, EventKind, Flag, FlagKind, LabelKey, LoopId, LoopState, LoopTicket, NewRequest,
-    Store, Write,
+    Agent, Applied, AttemptCause, AttemptEnd, EventKind, Flag, FlagKind, LabelKey, LoopId,
+    LoopState, LoopTicket, NewAttempt, NewRequest, SkillsSource, Store, Write, unit_name,
 };
 use rsb_gauge_reconcile::{MemoryStore, ParkReason, Situation};
 use rsb_gauge_store::{SqliteStore, StoreError};
@@ -52,6 +52,44 @@ fn ticket() -> LoopTicket {
     }
 }
 
+fn start_attempt(loop_id: LoopId, number: u32) -> Write {
+    Write::StartAttempt {
+        loop_id,
+        attempt: NewAttempt {
+            number,
+            unit: unit_name(loop_id, number),
+            agent: Agent::Claude,
+            model: "claude-opus".into(),
+            started_at: 100,
+            runtime_bound: 3600,
+            skills: SkillsSource {
+                commit: "f00d".into(),
+                clean: number % 2 == 1,
+            },
+        },
+    }
+}
+
+fn end_attempt(loop_id: LoopId, attempt: u32) -> Write {
+    Write::EndAttempt {
+        loop_id,
+        attempt,
+        end: AttemptEnd {
+            at: 200,
+            exit: Some(1),
+            cause: Some(AttemptCause::ExitedNonzero),
+        },
+    }
+}
+
+fn issue_brief(loop_id: LoopId, attempt: u32) -> Write {
+    Write::IssueBrief {
+        loop_id,
+        attempt,
+        brief: json!({ "attempt": attempt, "ticket": "S-0001/6" }),
+    }
+}
+
 fn label(repo: &str, issue: u64, event: u64) -> LabelKey {
     LabelKey {
         repo: repo.into(),
@@ -64,14 +102,14 @@ fn label(repo: &str, issue: u64, event: u64) -> LabelKey {
 fn create_applies_every_migration_and_ties_the_store_to_its_repos() {
     let dir = dir();
     let (path, store) = create(dir.path());
-    assert_eq!(store.version().unwrap(), 2);
+    assert_eq!(store.version().unwrap(), 3);
     assert_eq!(
         store.repos().unwrap(),
         PathBuf::from("/registry/repos.toml")
     );
     drop(store);
     let again = SqliteStore::open(&path).unwrap();
-    assert_eq!(again.version().unwrap(), 2);
+    assert_eq!(again.version().unwrap(), 3);
     assert!(matches!(
         SqliteStore::create(&path, Path::new("x")),
         Err(StoreError::Exists(_))
@@ -127,7 +165,7 @@ fn a_newer_schema_is_refused() {
         SqliteStore::open(&path),
         Err(StoreError::Newer {
             found: 99,
-            known: 2
+            known: 3
         })
     ));
 }
@@ -155,7 +193,7 @@ fn a_v1_store_migrates_and_its_rows_read_back() {
     .unwrap();
     drop(raw);
     let mut store = SqliteStore::open(&path).unwrap();
-    assert_eq!(store.version().unwrap(), 2);
+    assert_eq!(store.version().unwrap(), 3);
     let loops = store.loops().unwrap();
     assert_eq!(loops[0].ticket, None);
     let requests = store.snapshot().unwrap().requests;
@@ -167,6 +205,48 @@ fn a_v1_store_migrates_and_its_rows_read_back() {
             .unwrap()
             .is_some()
     );
+}
+
+/// A store made by ticket 05's build, with a ticketed loop in it, opens
+/// under v3: the loop reads back unchanged, with no attempts or briefs yet.
+#[test]
+fn a_v2_store_migrates_and_its_rows_read_back() {
+    let dir = dir();
+    let path = dir.path().join("v2.sqlite");
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    raw.execute_batch(
+        "CREATE TABLE migration (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
+    )
+    .unwrap();
+    raw.execute_batch(include_str!("../migrations/0001_loops.sql"))
+        .unwrap();
+    raw.execute_batch(include_str!("../migrations/0002_world.sql"))
+        .unwrap();
+    raw.execute_batch(
+        "INSERT INTO migration VALUES (1, 0);
+         INSERT INTO migration VALUES (2, 0);
+         INSERT INTO loop (repo, issue, ordinal, agent, state, opened_at,
+                 ticket, ticket_path, base_branch, base_sha, lockfile)
+             VALUES ('lumen', 3, 1, 'claude', 'open', 5, 'S-0001/5', 'specs/x.md',
+                 'main', 'abc', 'def');
+         INSERT INTO request (repo, issue, agent, state, created_at, label_event)
+             VALUES ('lumen', 4, 'claude', 'pending', 6, 900);",
+    )
+    .unwrap();
+    drop(raw);
+    let mut store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.version().unwrap(), 3);
+    let snap = store.snapshot().unwrap();
+    assert_eq!(snap.loops[0].ticket.as_ref().unwrap().id, "S-0001/5");
+    assert_eq!(snap.requests[0].label, Some(900));
+    assert!(snap.attempts.is_empty());
+    assert!(snap.briefs.is_empty());
+    // The migrated loop takes attempts.
+    let start = start_attempt(LoopId(1), 1);
+    assert!(matches!(
+        store.write(&start, 7, &json!({})).unwrap(),
+        Applied::Recorded(_)
+    ));
 }
 
 #[test]
@@ -432,4 +512,136 @@ fn events_come_back_in_sequence_from_any_cursor() {
         .collect();
     assert_eq!(after, [4, 5]);
     assert!(store.events(5, 100).unwrap().is_empty());
+}
+
+/// Each attempt write records once and is a no-op on repeat, the same in
+/// SQLite and the fake; ending an attempt that was never started, or writing
+/// to a loop that does not exist, is refused.
+#[test]
+fn attempt_writes_record_once_in_sqlite_and_the_fake() {
+    let dir = dir();
+    let (_path, mut sqlite) = create(dir.path());
+    let mut memory = MemoryStore::new();
+
+    fn script<S: Store>(store: &mut S) -> Vec<String> {
+        let mut out = Vec::new();
+        let applied = |a: Applied| match a {
+            Applied::Recorded(e) => format!(
+                "event {} {} {:?} {:?} {:?} {}",
+                e.seq, e.kind, e.repo, e.issue, e.loop_id, e.payload
+            ),
+            other => format!("{other:?}"),
+        };
+        let a = store.request(&request("ref", 1), 1).unwrap();
+        store
+            .write(&open_loop("ref", 1, vec![a]), 2, &json!({}))
+            .unwrap();
+        let run = LoopId(1);
+        let writes = [
+            ("brief", issue_brief(run, 1)),
+            ("brief again", issue_brief(run, 1)),
+            ("start 2", start_attempt(run, 2)),
+            ("start", start_attempt(run, 1)),
+            ("start again", start_attempt(run, 1)),
+            ("end", end_attempt(run, 1)),
+            ("end again", end_attempt(run, 1)),
+            ("brief 2", issue_brief(run, 2)),
+        ];
+        for (at, (label, write)) in writes.iter().enumerate() {
+            let payload = json!({ "step": label });
+            let result = store.write(write, 10 + at as i64, &payload).unwrap();
+            out.push(format!("{label}: {}", applied(result)));
+        }
+        let missing = store.write(&end_attempt(run, 9), 30, &json!({}));
+        out.push(format!("end missing: {}", missing.is_err()));
+        let unknown = [
+            issue_brief(LoopId(7), 1),
+            start_attempt(LoopId(7), 1),
+            end_attempt(LoopId(7), 1),
+        ];
+        for write in &unknown {
+            let result = store.write(write, 31, &json!({}));
+            out.push(format!("unknown loop: {}", result.is_err()));
+        }
+        let snap = store.snapshot().unwrap();
+        out.push(format!("attempts: {:?}", snap.attempts));
+        out.push(format!("briefs: {:?}", snap.briefs));
+        out.push(format!("events: {:?}", store.events(0, 100).unwrap()));
+        out
+    }
+
+    let from_sqlite = script(&mut sqlite);
+    let from_memory = script(&mut memory);
+    assert_eq!(from_sqlite, from_memory);
+
+    let snap = sqlite.snapshot().unwrap();
+    let numbers: Vec<u32> = snap.attempts.iter().map(|a| a.started.number).collect();
+    assert_eq!(numbers, [1, 2]);
+    assert_eq!(snap.attempts[0].started.unit, "gauge-run-1-1");
+    assert!(snap.attempts[0].started.skills.clean);
+    assert_eq!(
+        snap.attempts[0].end,
+        Some(AttemptEnd {
+            at: 200,
+            exit: Some(1),
+            cause: Some(AttemptCause::ExitedNonzero),
+        })
+    );
+    assert_eq!(snap.attempts[1].end, None);
+    assert_eq!(snap.briefs.len(), 2);
+    assert_eq!(snap.briefs[0].brief["ticket"], "S-0001/6");
+    let kinds: Vec<EventKind> = sqlite
+        .events(0, 100)
+        .unwrap()
+        .iter()
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            EventKind::LoopOpened,
+            EventKind::BriefIssued,
+            EventKind::AttemptStarted,
+            EventKind::AttemptStarted,
+            EventKind::AttemptEnded,
+            EventKind::BriefIssued,
+        ]
+    );
+    let err = sqlite
+        .write(&end_attempt(LoopId(1), 9), 40, &json!({}))
+        .err()
+        .unwrap();
+    assert!(
+        matches!(
+            err,
+            StoreError::Value(rsb_gauge_reconcile::ReconcileError::NoAttempt(LoopId(1), 9))
+        ),
+        "{err:?}"
+    );
+}
+
+/// No write closes a loop yet, so the test closes it by hand: its attempts
+/// and briefs leave the snapshot with it, and an open loop's stay.
+#[test]
+fn a_closed_loops_attempts_and_briefs_leave_the_snapshot() {
+    let dir = dir();
+    let (path, mut store) = create(dir.path());
+    for issue in 1..=2 {
+        let id = store.request(&request("ref", issue), 1).unwrap();
+        store
+            .write(&open_loop("ref", issue, vec![id]), 2, &json!({}))
+            .unwrap();
+        let run = LoopId(issue as i64);
+        store.write(&issue_brief(run, 1), 3, &json!({})).unwrap();
+        store.write(&start_attempt(run, 1), 4, &json!({})).unwrap();
+    }
+    assert_eq!(store.snapshot().unwrap().attempts.len(), 2);
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    raw.execute("UPDATE loop SET state = 'closed' WHERE id = 1", [])
+        .unwrap();
+    let snap = store.snapshot().unwrap();
+    let attempts: Vec<LoopId> = snap.attempts.iter().map(|a| a.loop_id).collect();
+    let briefs: Vec<LoopId> = snap.briefs.iter().map(|b| b.loop_id).collect();
+    assert_eq!(attempts, [LoopId(2)]);
+    assert_eq!(briefs, [LoopId(2)]);
 }
