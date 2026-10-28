@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::str::FromStr;
 
 use rsb_gauge_reconcile::store::{Agent, EventKind, FlagKind, LoopState, RequestState};
-use rsb_gauge_reconcile::{Action, ParkReason, ReconcileError, Refusal, Situation};
+use rsb_gauge_reconcile::{Action, ParkReason, ReconcileError, Refusal, Situation, TicketCause};
 use rsb_gauge_schema::Role;
 
 fn closed<T>(all: &[T], as_str: fn(T) -> &'static str)
@@ -52,6 +52,11 @@ fn request_state() {
 fn event_kind() {
     closed(EventKind::ALL, EventKind::as_str);
     assert!(serde_json::from_str::<EventKind>("\"loop_closed\"").is_err());
+}
+
+#[test]
+fn ticket_cause() {
+    closed(TicketCause::ALL, TicketCause::as_str);
 }
 
 #[test]
@@ -142,6 +147,14 @@ fn refusal() {
             Refusal::LoopAlreadyOpen {},
             r#"{"reason":"loop_already_open"}"#,
         ),
+        (Refusal::NotReached {}, r#"{"reason":"not_reached"}"#),
+        (Refusal::NoLockfile {}, r#"{"reason":"no_lockfile"}"#),
+        (
+            Refusal::NoTicket {
+                cause: TicketCause::TwoTickets,
+            },
+            r#"{"reason":"no_ticket","cause":"two_tickets"}"#,
+        ),
     ];
     for (member, json) in members {
         assert_eq!(serde_json::to_string(&member).unwrap(), json);
@@ -155,6 +168,9 @@ fn refusal() {
         r#"{"reason":"not_listed","role":"project"}"#,
         r#"{"reason":"role"}"#,
         r#"{"reason":"role","role":"vendor"}"#,
+        r#"{"reason":"no_lockfile","hash":"ab"}"#,
+        r#"{"reason":"no_ticket"}"#,
+        r#"{"reason":"no_ticket","cause":"lost"}"#,
         r#"{}"#,
     ] {
         assert!(

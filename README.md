@@ -71,7 +71,15 @@ gauge events --since <seq> [--follow]                   # the event log by curso
 `agent-driver` reads its App id and key path from
 `~/.config/rsb/agent-driver/config.toml`.
 
-Status: S-0001, the thin loop, ticket 03 (a run request opens a loop).
+Status: S-0001, the thin loop, ticket 05 (the world observed: the
+`rsb-workflow:run` label opens a loop on a minted repo).
+
+A tick polls every repo `repos.toml` gives role `project` or `reference`
+that the driver's config lists, for open issues carrying
+`rsb-workflow:run`; each new label event is one request. A request opens
+a loop only when the default branch carries `.rsb/governance.lock` and
+the issue's `<!-- rsb-ticket S-NNNN/N -->` marker resolves to a ticket
+file there; otherwise it is refused with its reason.
 
 Related repositories, siblings under `~/code/software/rsb/factory/`:
 `../agent-registry` holds the standards shared by the rsb apps and the

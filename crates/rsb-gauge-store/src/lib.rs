@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rsb_gauge_reconcile::store::{
-    Agent, Applied, Event, EventKind, Flag, FlagKind, Loop, LoopId, LoopState, NewRequest, Request,
-    RequestId, RequestState, Snapshot, Store, Write,
+    Agent, Applied, Event, EventKind, Flag, FlagKind, LabelKey, Loop, LoopId, LoopState,
+    LoopTicket, NewRequest, Request, RequestId, RequestState, Snapshot, Store, Write,
 };
 use rsb_gauge_reconcile::{ParkReason, ReconcileError, Situation};
 use rusqlite::{Connection, OpenFlags, OptionalExtension as _, Transaction, TransactionBehavior};
@@ -28,7 +28,10 @@ pub const ENV: &str = "GAUGE_STORE";
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The migrations, in version order. A version is never edited once shipped.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_loops.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_loops.sql")),
+    (2, include_str!("../migrations/0002_world.sql")),
+];
 
 /// The setting that ties the store to the `repos.toml` whose repos its ticks
 /// may open loops on.
@@ -261,9 +264,11 @@ type LoopRow = (
     Option<String>,
     Option<String>,
     i64,
+    [Option<String>; 5],
 );
 
-const LOOP_COLUMNS: &str = "id, repo, issue, ordinal, agent, state, park, situation, opened_at";
+const LOOP_COLUMNS: &str = "id, repo, issue, ordinal, agent, state, park, situation, opened_at, \
+     ticket, ticket_path, base_branch, base_sha, lockfile";
 
 fn loop_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoopRow> {
     Ok((
@@ -276,11 +281,35 @@ fn loop_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoopRow> {
         row.get(6)?,
         row.get(7)?,
         row.get(8)?,
+        [
+            row.get(9)?,
+            row.get(10)?,
+            row.get(11)?,
+            row.get(12)?,
+            row.get(13)?,
+        ],
     ))
 }
 
 fn to_loop(row: LoopRow) -> Result<Loop, StoreError> {
-    let (id, repo, issue, ordinal, agent, state, park, situation, opened_at) = row;
+    let (id, repo, issue, ordinal, agent, state, park, situation, opened_at, ticket) = row;
+    let ticket = match ticket {
+        [None, None, None, None, None] => None,
+        [
+            Some(id),
+            Some(path),
+            Some(branch),
+            Some(sha),
+            Some(lockfile),
+        ] => Some(LoopTicket {
+            id,
+            path,
+            branch,
+            sha,
+            lockfile,
+        }),
+        _ => return Err(StoreError::PartialTicket(id)),
+    };
     Ok(Loop {
         id: LoopId(id),
         repo,
@@ -294,6 +323,7 @@ fn to_loop(row: LoopRow) -> Result<Loop, StoreError> {
         park: parse_opt::<ParkReason>(park)?,
         situation: parse_opt::<Situation>(situation)?,
         opened_at,
+        ticket,
     })
 }
 
@@ -313,7 +343,7 @@ impl Store for SqliteStore {
     fn snapshot(&self) -> Result<Snapshot, StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         let mut stmt = tx.prepare(
-            "SELECT id, repo, issue, agent, created_at FROM request
+            "SELECT id, repo, issue, agent, created_at, label_event FROM request
              WHERE state = ?1 ORDER BY id",
         )?;
         let raw = stmt
@@ -324,19 +354,21 @@ impl Store for SqliteStore {
                     r.get::<_, i64>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
         let requests = raw
             .into_iter()
-            .map(|(id, repo, issue, agent, at)| {
+            .map(|(id, repo, issue, agent, at, label)| {
                 Ok(Request {
                     id: RequestId(id),
                     repo,
                     issue: uint("issue", issue)?,
                     agent: parse::<Agent>(&agent)?,
                     at,
+                    label: label.map(|l| uint("label event", l)).transpose()?,
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
@@ -392,6 +424,7 @@ impl Store for SqliteStore {
                 agent,
                 requests,
                 situation,
+                ticket,
             } => {
                 let issue_i = int("issue", *issue)?;
                 let open: bool = tx.query_row(
@@ -409,9 +442,10 @@ impl Store for SqliteStore {
                     |r| r.get(0),
                 )?;
                 tx.execute(
-                    "INSERT INTO loop (repo, issue, ordinal, agent, state, situation, opened_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    (
+                    "INSERT INTO loop (repo, issue, ordinal, agent, state, situation, opened_at,
+                         ticket, ticket_path, base_branch, base_sha, lockfile)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    rusqlite::params![
                         repo,
                         issue_i,
                         ordinal,
@@ -419,7 +453,12 @@ impl Store for SqliteStore {
                         LoopState::Open.as_str(),
                         situation.as_str(),
                         at,
-                    ),
+                        ticket.id,
+                        ticket.path,
+                        ticket.branch,
+                        ticket.sha,
+                        ticket.lockfile,
+                    ],
                 )?;
                 let id = LoopId(tx.last_insert_rowid());
                 settle(&tx, requests, RequestState::Handled, Some(id), at)?;
@@ -528,6 +567,39 @@ impl Store for SqliteStore {
         Ok(id)
     }
 
+    fn label_request(
+        &mut self,
+        key: &LabelKey,
+        agent: Agent,
+        at: i64,
+    ) -> Result<Option<RequestId>, StoreError> {
+        let tx = self.immediate()?;
+        // Looked up first, not `INSERT OR IGNORE`: an ignored insert still
+        // spends an AUTOINCREMENT id, and every tick sees the label again.
+        if label_exists(&tx, key)? {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO request (repo, issue, agent, state, created_at, label_event)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                &key.repo,
+                int("issue", key.issue)?,
+                agent.as_str(),
+                RequestState::Pending.as_str(),
+                at,
+                int("label event", key.event)?,
+            ),
+        )?;
+        let id = RequestId(tx.last_insert_rowid());
+        tx.commit()?;
+        Ok(Some(id))
+    }
+
+    fn label_requested(&self, key: &LabelKey) -> Result<bool, StoreError> {
+        label_exists(&self.conn, key)
+    }
+
     fn flag(&mut self, flag: Flag, at: i64) -> Result<bool, StoreError> {
         let tx = self.immediate()?;
         if let Some(id) = flag.scope {
@@ -580,6 +652,19 @@ impl Store for SqliteStore {
             })
             .collect()
     }
+}
+
+fn label_exists(conn: &Connection, key: &LabelKey) -> Result<bool, StoreError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM request
+         WHERE repo = ?1 AND issue = ?2 AND label_event = ?3)",
+        (
+            &key.repo,
+            int("issue", key.issue)?,
+            int("label event", key.event)?,
+        ),
+        |r| r.get(0),
+    )?)
 }
 
 fn select_loop(conn: &Connection, id: LoopId) -> Result<Loop, StoreError> {

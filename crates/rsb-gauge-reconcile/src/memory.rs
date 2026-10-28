@@ -3,8 +3,8 @@
 
 use crate::ReconcileError;
 use crate::store::{
-    Applied, Event, Flag, Loop, LoopId, LoopState, NewRequest, Request, RequestId, RequestState,
-    Snapshot, Store, Write,
+    Agent, Applied, Event, Flag, LabelKey, Loop, LoopId, LoopState, NewRequest, Request, RequestId,
+    RequestState, Snapshot, Store, Write,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +69,20 @@ impl MemoryStore {
         Applied::Recorded(event)
     }
 
+    fn insert(&mut self, request: Request) -> RequestId {
+        let id = request.id;
+        self.requests.push(RequestRow {
+            request,
+            state: RequestState::Pending,
+            loop_id: None,
+        });
+        id
+    }
+
+    fn next_request(&self) -> RequestId {
+        RequestId(self.requests.last().map_or(1, |r| r.request.id.0 + 1))
+    }
+
     fn loop_mut(&mut self, id: LoopId) -> Result<&mut Loop, ReconcileError> {
         self.loops
             .iter_mut()
@@ -116,6 +130,7 @@ impl Store for MemoryStore {
                 agent,
                 requests,
                 situation,
+                ticket,
             } => {
                 let open = self
                     .loops
@@ -141,6 +156,7 @@ impl Store for MemoryStore {
                     park: None,
                     situation: Some(*situation),
                     opened_at: at,
+                    ticket: Some(ticket.clone()),
                 });
                 self.settle(requests, RequestState::Handled, Some(id));
                 Ok(self.record(write, at, repo, *issue, Some(id), payload))
@@ -188,20 +204,43 @@ impl Store for MemoryStore {
     }
 
     fn request(&mut self, request: &NewRequest, at: i64) -> Result<RequestId, Self::Error> {
-        let id = RequestId(self.requests.last().map_or(1, |r| r.request.id.0 + 1));
-        self.requests.push(RequestRow {
-            request: Request {
-                id,
-                repo: request.repo.clone(),
-                issue: request.issue,
-                agent: request.agent,
-                at,
-            },
-            state: RequestState::Pending,
-            loop_id: None,
+        let id = self.insert(Request {
+            id: self.next_request(),
+            repo: request.repo.clone(),
+            issue: request.issue,
+            agent: request.agent,
+            at,
+            label: None,
         });
         self.trigger += 1;
         Ok(id)
+    }
+
+    fn label_request(
+        &mut self,
+        key: &LabelKey,
+        agent: Agent,
+        at: i64,
+    ) -> Result<Option<RequestId>, Self::Error> {
+        if self.label_requested(key)? {
+            return Ok(None);
+        }
+        Ok(Some(self.insert(Request {
+            id: self.next_request(),
+            repo: key.repo.clone(),
+            issue: key.issue,
+            agent,
+            at,
+            label: Some(key.event),
+        })))
+    }
+
+    fn label_requested(&self, key: &LabelKey) -> Result<bool, Self::Error> {
+        Ok(self.requests.iter().any(|r| {
+            r.request.repo == key.repo
+                && r.request.issue == key.issue
+                && r.request.label == Some(key.event)
+        }))
     }
 
     fn flag(&mut self, flag: Flag, _at: i64) -> Result<bool, Self::Error> {

@@ -1,22 +1,25 @@
 //! The kill harness and the tick's tests. A scripted world runs through
 //! ticks against the fakes; a seeded kill stops a tick between any two port
-//! calls; the tick restarts from the store alone; and the end state must equal
-//! the run with no kill, with no event repeated. Later tickets add their
-//! rows' scenarios to [`scenarios`].
+//! calls, store or GitHub; the tick restarts from the store and the fake
+//! world alone; and the end state must equal the run with no kill, with no
+//! event repeated. Later tickets add their rows' scenarios to [`scenarios`].
 
 use std::cell::Cell;
 use std::path::Path;
 
 use rsb_gauge_reconcile::store::{
-    Agent, Applied, Event, EventKind, Flag, FlagKind, Loop, LoopId, LoopState, NewRequest,
-    RequestId, Snapshot, Store, Write,
+    Agent, Applied, Event, EventKind, Flag, FlagKind, LabelKey, Loop, LoopId, LoopState,
+    NewRequest, RequestId, Snapshot, Store, Write,
 };
-use rsb_gauge_reconcile::{Action, MemoryStore, ParkReason, Refusal, Situation};
+use rsb_gauge_reconcile::{Action, MemoryStore, ParkReason, Refusal, Situation, TicketCause};
 use rsb_gauge_schema::Repos;
 use rsb_gauge_store::SqliteStore;
 
+use crate::error::Error;
+use crate::fake::{FakeGitHub, SHA};
 use crate::registry::{Registry, Source};
-use crate::tick::{self, Clock, Mode, Outcome, Report};
+use crate::tick::{self, Clock, Mode, Outcome, Poll, Polled, Report};
+use crate::world::{self, Branch, Entry, GitHub, IssueSeen, LABEL, Labelled};
 
 const NOW: i64 = 1_793_000_000;
 
@@ -47,6 +50,20 @@ path = "projects/desktop/lumen"
 status = "active"
 
 [[repo]]
+name = "libraw"
+role = "project"
+kind = "lib"
+path = "projects/libraw"
+status = "active"
+
+[[repo]]
+name = "gordana-milan"
+role = "project"
+kind = "service"
+path = "projects/gordana-milan"
+status = "active"
+
+[[repo]]
 name = "gauge"
 role = "factory"
 path = "factory/gauge"
@@ -70,6 +87,29 @@ fn registry() -> Result<Registry, String> {
     })
 }
 
+/// The ticket every scripted issue names, unless it names none.
+const TICKET: &str = "specs/S-0001-thin-loop/01-first-ticket.md";
+const MARKER: &str = "<!-- rsb-ticket S-0001/1 -->\n\n# The first ticket\n";
+
+/// The fake world: the reference repo and `lumen` minted, with the lockfile
+/// and the ticket file; `libraw` eligible by role but with no lockfile; and
+/// `gordana-milan`, `gauge` and `research` not reached. Issues 1 to 20 name
+/// the ticket, but the reference repo's issue 13 names none.
+fn world() -> FakeGitHub {
+    let issues = |mut r: crate::fake::FakeRepo| {
+        for n in 1..=20 {
+            r = r.issue(n, MARKER);
+        }
+        r
+    };
+    FakeGitHub::new()
+        .repo("ref-rsb-serverless-stack", |r| {
+            issues(r.file(TICKET)).issue(13, "A bug report, no ticket.")
+        })
+        .repo("lumen", |r| issues(r.file(TICKET)))
+        .repo("libraw", |r| issues(r.file(TICKET)).without_lockfile())
+}
+
 fn ask(store: &mut impl Store, repo: &str, issue: u64) -> RequestId {
     store
         .request(
@@ -83,8 +123,13 @@ fn ask(store: &mut impl Store, repo: &str, issue: u64) -> RequestId {
         .unwrap()
 }
 
+/// One tick against the scripted world with no label on any issue.
 fn tick(store: &mut impl Store, mode: Mode) -> Report {
-    tick::run(store, &registry(), &FixedClock, mode).unwrap()
+    tick_in(store, &mut world(), mode)
+}
+
+fn tick_in(store: &mut impl Store, github: &mut impl GitHub, mode: Mode) -> Report {
+    tick::run(store, github, &registry(), &FixedClock, mode).unwrap()
 }
 
 fn events(store: &impl Store) -> Vec<Event> {
@@ -123,13 +168,38 @@ fn end_state(store: &impl Store) -> (Vec<Loop>, Vec<String>, Snapshot) {
 // ---------------------------------------------------------------------------
 // The kill harness.
 
-/// A store that dies at one port call: that call and every later one fail
-/// before reaching the store, as if the process had been killed between the
-/// previous call and this one.
-struct Killable<'a, S> {
-    inner: &'a mut S,
+/// The count of port calls in one tick, across the store and GitHub, and
+/// the one to die at: that call and every later one fail before reaching the
+/// port, as if the process had been killed between the previous call and
+/// this one.
+struct Gate {
     calls: Cell<usize>,
     kill_at: Option<usize>,
+}
+
+impl Gate {
+    fn new(kill_at: Option<usize>) -> Self {
+        Self {
+            calls: Cell::new(0),
+            kill_at,
+        }
+    }
+
+    fn pass(&self) -> bool {
+        let n = self.calls.get();
+        self.calls.set(n + 1);
+        !self.kill_at.is_some_and(|k| n >= k)
+    }
+
+    fn killed(&self) -> bool {
+        self.kill_at.is_some_and(|k| self.calls.get() > k)
+    }
+}
+
+/// A store behind the gate.
+struct Killable<'a, S> {
+    inner: &'a mut S,
+    gate: &'a Gate,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -140,26 +210,13 @@ enum Killed<E: std::error::Error + 'static> {
     Store(#[source] E),
 }
 
-impl<'a, S: Store> Killable<'a, S> {
-    fn new(inner: &'a mut S, kill_at: Option<usize>) -> Self {
-        Self {
-            inner,
-            calls: Cell::new(0),
-            kill_at,
-        }
-    }
-
+impl<S: Store> Killable<'_, S> {
     fn gate(&self) -> Result<(), Killed<S::Error>> {
-        let n = self.calls.get();
-        self.calls.set(n + 1);
-        if self.kill_at.is_some_and(|k| n >= k) {
-            return Err(Killed::Killed);
+        if self.gate.pass() {
+            Ok(())
+        } else {
+            Err(Killed::Killed)
         }
-        Ok(())
-    }
-
-    fn killed(&self) -> bool {
-        self.kill_at.is_some_and(|k| self.calls.get() > k)
     }
 }
 
@@ -191,6 +248,23 @@ impl<S: Store> Store for Killable<'_, S> {
         self.inner.request(request, at).map_err(Killed::Store)
     }
 
+    fn label_request(
+        &mut self,
+        key: &LabelKey,
+        agent: Agent,
+        at: i64,
+    ) -> Result<Option<RequestId>, Self::Error> {
+        self.gate()?;
+        self.inner
+            .label_request(key, agent, at)
+            .map_err(Killed::Store)
+    }
+
+    fn label_requested(&self, key: &LabelKey) -> Result<bool, Self::Error> {
+        self.gate()?;
+        self.inner.label_requested(key).map_err(Killed::Store)
+    }
+
     fn flag(&mut self, flag: Flag, at: i64) -> Result<bool, Self::Error> {
         self.gate()?;
         self.inner.flag(flag, at).map_err(Killed::Store)
@@ -204,6 +278,58 @@ impl<S: Store> Store for Killable<'_, S> {
     fn events(&self, since: u64, limit: usize) -> Result<Vec<Event>, Self::Error> {
         self.gate()?;
         self.inner.events(since, limit).map_err(Killed::Store)
+    }
+}
+
+/// GitHub behind the same gate as the store.
+struct KillableGitHub<'a, G> {
+    inner: &'a mut G,
+    gate: &'a Gate,
+}
+
+impl<G: GitHub> KillableGitHub<'_, G> {
+    fn gate(&self) -> Result<(), Error> {
+        if self.gate.pass() {
+            Ok(())
+        } else {
+            Err(Error::Failed("killed".to_owned()))
+        }
+    }
+}
+
+impl<G: GitHub> GitHub for KillableGitHub<'_, G> {
+    fn reaches(&self, repo: &str) -> bool {
+        self.inner.reaches(repo)
+    }
+
+    fn labelled(&mut self, repo: &str, label: &str) -> Result<Vec<Labelled>, Error> {
+        self.gate()?;
+        self.inner.labelled(repo, label)
+    }
+
+    fn issue(&mut self, repo: &str, number: u64) -> Result<Option<IssueSeen>, Error> {
+        self.gate()?;
+        self.inner.issue(repo, number)
+    }
+
+    fn default_branch(&mut self, repo: &str) -> Result<Branch, Error> {
+        self.gate()?;
+        self.inner.default_branch(repo)
+    }
+
+    fn list(&mut self, repo: &str, sha: &str, dir: &str) -> Result<Option<Vec<Entry>>, Error> {
+        self.gate()?;
+        self.inner.list(repo, sha, dir)
+    }
+
+    fn read(&mut self, repo: &str, sha: &str, path: &str) -> Result<Option<Vec<u8>>, Error> {
+        self.gate()?;
+        self.inner.read(repo, sha, path)
+    }
+
+    fn clone_at(&mut self, repo: &str, sha: &str, into: &Path) -> Result<(), Error> {
+        self.gate()?;
+        self.inner.clone_at(repo, sha, into)
     }
 }
 
@@ -223,6 +349,9 @@ impl Seeded {
 #[derive(Clone, Copy, Debug)]
 enum Step {
     Ask(&'static str, u64),
+    /// The owner applies the run label: a new label event.
+    Label(&'static str, u64),
+    Unlabel(&'static str, u64),
     Pause(Option<i64>),
     Tick,
 }
@@ -257,6 +386,44 @@ fn scenarios() -> Vec<(&'static str, Vec<Step>)> {
             vec![Ask("lumen", 3), Tick, Ask("lumen", 3), Tick, Tick],
         ),
         (
+            "a label opens one loop; the label stays and opens nothing more",
+            vec![Label("ref-rsb-serverless-stack", 11), Tick, Tick, Tick],
+        ),
+        (
+            "a label on a repo without the lockfile is refused once",
+            vec![Label("libraw", 2), Tick, Tick],
+        ),
+        (
+            "a label on an issue naming no ticket is refused once",
+            vec![Label("ref-rsb-serverless-stack", 13), Tick, Tick],
+        ),
+        (
+            "a label and a request on one issue, and a label applied again",
+            vec![
+                Label("lumen", 12),
+                Ask("lumen", 12),
+                Tick,
+                Unlabel("lumen", 12),
+                Label("lumen", 12),
+                Label("libraw", 4),
+                Tick,
+                Label("libraw", 4),
+                Tick,
+            ],
+        ),
+        (
+            "labels on three repos and requests on factory and unreached ones",
+            vec![
+                Label("ref-rsb-serverless-stack", 1),
+                Label("lumen", 1),
+                Label("libraw", 1),
+                Ask("gordana-milan", 1),
+                Ask("gauge", 2),
+                Tick,
+                Tick,
+            ],
+        ),
+        (
             "a request on an issue whose loop is parked is refused",
             vec![
                 Ask("ref-rsb-serverless-stack", 8),
@@ -270,20 +437,29 @@ fn scenarios() -> Vec<(&'static str, Vec<Step>)> {
     ]
 }
 
-/// Runs a script. At each tick, `kills` picks the port call to die at, or
-/// none; a killed tick is restarted until one completes, as systemd would.
-/// Settling ticks after the script let both runs reach rest. Returns how
-/// many ticks were killed.
+/// Runs a script against a fresh [`world`]. At each tick, `kills` picks the
+/// port call to die at, or none; a killed tick is restarted until one
+/// completes, as systemd would. Settling ticks after the script let both runs
+/// reach rest. Returns how many ticks were killed, and how many port calls
+/// each script tick made in the run that completed.
 fn play<S: Store>(
     store: &mut S,
     script: &[Step],
     mut kills: impl FnMut() -> Option<usize>,
-) -> usize {
+) -> (usize, Vec<usize>) {
+    let mut github = world();
     let mut killed = 0;
+    let mut calls = Vec::new();
     for step in script {
         match *step {
             Step::Ask(repo, issue) => {
                 ask(store, repo, issue);
+            }
+            Step::Label(repo, issue) => {
+                github.label(repo, issue, LABEL);
+            }
+            Step::Unlabel(repo, issue) => {
+                github.unlabel(repo, issue, LABEL);
             }
             Step::Pause(scope) => {
                 store
@@ -297,11 +473,26 @@ fn play<S: Store>(
                     .unwrap();
             }
             Step::Tick => loop {
-                let mut killable = Killable::new(store, kills());
-                let result = tick::run(&mut killable, &registry(), &FixedClock, Mode::Act);
-                if !killable.killed() {
+                let gate = Gate::new(kills());
+                let mut killable = Killable {
+                    inner: store,
+                    gate: &gate,
+                };
+                let mut github = KillableGitHub {
+                    inner: &mut github,
+                    gate: &gate,
+                };
+                let result = tick::run(
+                    &mut killable,
+                    &mut github,
+                    &registry(),
+                    &FixedClock,
+                    Mode::Act,
+                );
+                if !gate.killed() {
                     let report = result.unwrap();
                     assert_eq!(report.failed, 0, "{report:?}");
+                    calls.push(gate.calls.get());
                     break;
                 }
                 killed += 1;
@@ -309,10 +500,14 @@ fn play<S: Store>(
         }
     }
     for _ in 0..3 {
-        tick(store, Mode::Act);
+        tick_in(store, &mut github, Mode::Act);
     }
-    killed
+    (killed, calls)
 }
+
+/// More port calls than any scripted tick makes, so a random kill can land
+/// anywhere.
+const CALLS: usize = 48;
 
 fn no_event_repeats(events: &[String]) {
     let mut seen = std::collections::BTreeSet::new();
@@ -325,7 +520,8 @@ fn no_event_repeats(events: &[String]) {
 fn a_kill_at_any_point_reaches_the_same_end_state_on_the_fake() {
     for (name, script) in scenarios() {
         let mut clean = MemoryStore::new();
-        play(&mut clean, &script, || None);
+        let (_, calls) = play(&mut clean, &script, || None);
+        assert!(calls.iter().all(|&c| c < CALLS), "{name}: {calls:?}");
         let expected = end_state(&clean);
         no_event_repeats(&expected.1);
         let mut killed = 0;
@@ -333,10 +529,11 @@ fn a_kill_at_any_point_reaches_the_same_end_state_on_the_fake() {
             let mut rng = Seeded(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
             let mut store = MemoryStore::new();
             killed += play(&mut store, &script, || {
-                // Die in about two ticks of three, at any of the first eight
-                // port calls; more calls than a tick makes is no kill.
-                (rng.below(3) != 0).then(|| rng.below(8))
-            });
+                // Die in about two ticks of three, at any port call; more
+                // calls than a tick makes is no kill.
+                (rng.below(3) != 0).then(|| rng.below(CALLS))
+            })
+            .0;
             assert_eq!(end_state(&store), expected, "{name}, seed {seed}");
         }
         assert!(killed > 50, "{name}: only {killed} kills");
@@ -349,19 +546,19 @@ fn every_single_kill_point_reaches_the_same_end_state_on_sqlite() {
     for (n, (name, script)) in scenarios().into_iter().enumerate() {
         let path = dir.path().join(format!("clean-{n}.sqlite"));
         let mut clean = SqliteStore::create(&path, Path::new("/registry/repos.toml")).unwrap();
-        play(&mut clean, &script, || None);
+        let (_, calls) = play(&mut clean, &script, || None);
         let expected = end_state(&clean);
         no_event_repeats(&expected.1);
-        let ticks = script.iter().filter(|s| matches!(s, Step::Tick)).count();
-        for tick_index in 0..ticks {
-            for point in 0..8 {
+        // Every call of every tick, and one past the last, which is no kill.
+        for (tick_index, &made) in calls.iter().enumerate() {
+            for point in 0..=made {
                 let path = dir
                     .path()
                     .join(format!("kill-{n}-{tick_index}-{point}.sqlite"));
                 let mut store =
                     SqliteStore::create(&path, Path::new("/registry/repos.toml")).unwrap();
                 let mut seen = 0;
-                let killed = play(&mut store, &script, || {
+                let (killed, _) = play(&mut store, &script, || {
                     seen += 1;
                     (seen == tick_index + 1).then_some(point)
                 });
@@ -370,10 +567,11 @@ fn every_single_kill_point_reaches_the_same_end_state_on_sqlite() {
                     expected,
                     "{name}, tick {tick_index}, killed at call {point}"
                 );
-                if point < 2 {
-                    // Every tick makes at least two port calls.
-                    assert_eq!(killed, 1, "{name}, tick {tick_index}, call {point}");
-                }
+                assert_eq!(
+                    killed,
+                    usize::from(point < made),
+                    "{name}, tick {tick_index}, call {point}"
+                );
             }
         }
     }
@@ -616,6 +814,17 @@ fn a_trigger_during_the_tick_asks_for_one_more() {
         fn request(&mut self, r: &NewRequest, at: i64) -> Result<RequestId, Self::Error> {
             self.0.request(r, at)
         }
+        fn label_request(
+            &mut self,
+            key: &LabelKey,
+            agent: Agent,
+            at: i64,
+        ) -> Result<Option<RequestId>, Self::Error> {
+            self.0.label_request(key, agent, at)
+        }
+        fn label_requested(&self, key: &LabelKey) -> Result<bool, Self::Error> {
+            self.0.label_requested(key)
+        }
         fn flag(&mut self, f: Flag, at: i64) -> Result<bool, Self::Error> {
             self.0.flag(f, at)
         }
@@ -643,8 +852,13 @@ fn an_unreadable_registry_fails_only_the_issues_that_need_it() {
     tick(&mut store, Mode::Act);
     ask(&mut store, "lumen", 2);
     let broken: Result<Registry, String> = Err("cannot read /registry/repos.toml".into());
-    let report = tick::run(&mut store, &broken, &FixedClock, Mode::Act).unwrap();
-    assert_eq!(report.failed, 1);
+    let report = tick::run(&mut store, &mut world(), &broken, &FixedClock, Mode::Act).unwrap();
+    // The poll, and the one issue that needs a role.
+    assert_eq!(report.failed, 2);
+    assert!(matches!(
+        &report.polls[..],
+        [Poll { repo: None, polled: Polled::Failed(m) }] if m.contains("repos.toml")
+    ));
     let failed = report.lines.iter().find(|l| l.issue == 2).unwrap();
     assert!(matches!(&failed.outcome, Outcome::Failed(m) if m.contains("repos.toml")));
     let parked = report.lines.iter().find(|l| l.issue == 1).unwrap();
@@ -662,4 +876,279 @@ fn an_unreadable_registry_fails_only_the_issues_that_need_it() {
             .iter()
             .any(|e| e.kind == EventKind::ReconcileFailed && e.issue == Some(2))
     );
+}
+
+// ---------------------------------------------------------------------------
+// The criteria of ticket 05.
+
+const REF: &str = "ref-rsb-serverless-stack";
+
+fn opened(store: &impl Store) -> Vec<Event> {
+    events(store)
+        .into_iter()
+        .filter(|e| e.kind == EventKind::LoopOpened)
+        .collect()
+}
+
+#[test]
+fn a_labelled_issue_on_the_reference_repo_opens_one_loop_on_the_next_tick() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    let event = github.label(REF, 5, LABEL);
+    let report = tick_in(&mut store, &mut github, Mode::Act);
+    assert!(report.polls.contains(&Poll {
+        repo: Some(REF.into()),
+        polled: Polled::Seen {
+            labelled: 1,
+            new: 1
+        }
+    }));
+    let loops = store.loops().unwrap();
+    assert_eq!(loops.len(), 1);
+    let run = &loops[0];
+    assert_eq!((run.repo.as_str(), run.issue), (REF, 5));
+    let ticket = run.ticket.as_ref().unwrap();
+    assert_eq!(ticket.id, "S-0001/1");
+    assert_eq!(ticket.spec(), "S-0001");
+    assert_eq!(ticket.path, TICKET);
+    assert_eq!((ticket.branch.as_str(), ticket.sha.as_str()), ("main", SHA));
+    assert_eq!(ticket.lockfile, world::sha256(b"lockfile"));
+    let event_payload = &opened(&store)[0].payload;
+    assert_eq!(event_payload["labels"], serde_json::json!([event]));
+    assert_eq!(event_payload["world"]["lockfile"], ticket.lockfile);
+    assert_eq!(event_payload["world"]["ticket"]["path"], TICKET);
+
+    // A second tick opens nothing more: the label is still there, its event
+    // already has a request.
+    let again = tick_in(&mut store, &mut github, Mode::Act);
+    assert!(again.polls.contains(&Poll {
+        repo: Some(REF.into()),
+        polled: Polled::Seen {
+            labelled: 1,
+            new: 0
+        }
+    }));
+    assert_eq!(store.loops().unwrap().len(), 1);
+    assert_eq!(opened(&store).len(), 1);
+}
+
+#[test]
+fn a_tick_killed_after_the_label_request_is_inserted_inserts_no_second() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    github.label(REF, 5, LABEL);
+    // Calls: 0 polls the reference repo, 1 inserts its request, 2 polls
+    // lumen. Die there, after the insert and before the snapshot.
+    let gate = Gate::new(Some(2));
+    let result = tick::run(
+        &mut Killable {
+            inner: &mut store,
+            gate: &gate,
+        },
+        &mut KillableGitHub {
+            inner: &mut github,
+            gate: &gate,
+        },
+        &registry(),
+        &FixedClock,
+        Mode::Act,
+    );
+    assert!(gate.killed() && result.is_err());
+    let pending = store.snapshot().unwrap().requests;
+    assert_eq!(pending.len(), 1);
+    assert!(store.loops().unwrap().is_empty());
+
+    tick_in(&mut store, &mut github, Mode::Act);
+    tick_in(&mut store, &mut github, Mode::Act);
+    assert_eq!(store.loops().unwrap().len(), 1);
+    let opened = opened(&store);
+    assert_eq!(opened.len(), 1);
+    assert_eq!(
+        opened[0].payload["requests"],
+        serde_json::json!([pending[0].id.0])
+    );
+    assert!(
+        events(&store)
+            .iter()
+            .all(|e| e.kind != EventKind::RequestRefused),
+        "a duplicate request was refused"
+    );
+}
+
+#[test]
+fn a_label_on_a_repo_without_the_lockfile_opens_nothing_and_records_why() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    github.label("libraw", 3, LABEL);
+    tick_in(&mut store, &mut github, Mode::Act);
+    tick_in(&mut store, &mut github, Mode::Act);
+    assert!(store.loops().unwrap().is_empty());
+    let all = events(&store);
+    assert_eq!(all.len(), 1, "{all:?}");
+    let refused = &all[0];
+    assert_eq!(refused.kind, EventKind::RequestRefused);
+    assert_eq!(refused.payload["situation"], "ineligible");
+    assert_eq!(
+        refused.payload["refusal"],
+        serde_json::json!({ "reason": "no_lockfile" })
+    );
+    assert_eq!(
+        refused.payload["world"]["lockfile"],
+        serde_json::Value::Null
+    );
+    assert_eq!(refused.payload["world"]["sha"], SHA);
+}
+
+#[test]
+fn an_issue_naming_no_ticket_is_refused_with_its_cause_not_parked() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    github.label(REF, 13, LABEL);
+    ask(&mut store, REF, 40);
+    tick_in(&mut store, &mut github, Mode::Act);
+    assert!(store.loops().unwrap().is_empty());
+    let refusals: Vec<serde_json::Value> = events(&store)
+        .into_iter()
+        .map(|e| {
+            assert_eq!(e.kind, EventKind::RequestRefused);
+            assert_eq!(e.payload["situation"], "ticket_unresolved");
+            e.payload["refusal"].clone()
+        })
+        .collect();
+    let refusal = |cause: TicketCause| serde_json::json!({ "reason": "no_ticket", "cause": cause });
+    assert_eq!(
+        refusals,
+        [
+            refusal(TicketCause::NoMarker),
+            refusal(TicketCause::IssueMissing)
+        ]
+    );
+}
+
+#[test]
+fn only_eligible_repos_the_driver_reaches_are_polled() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    let report = tick_in(&mut store, &mut github, Mode::Act);
+    let polled: Vec<(&str, &Polled)> = report
+        .polls
+        .iter()
+        .map(|p| (p.repo.as_deref().unwrap(), &p.polled))
+        .collect();
+    let none = Polled::Seen {
+        labelled: 0,
+        new: 0,
+    };
+    assert_eq!(
+        polled,
+        [
+            (REF, &none),
+            ("lumen", &none),
+            ("libraw", &none),
+            ("gordana-milan", &Polled::Unreached),
+        ]
+    );
+
+    // A request on the repo the driver does not reach is refused, once,
+    // rather than failing on every tick.
+    ask(&mut store, "gordana-milan", 1);
+    tick_in(&mut store, &mut github, Mode::Act);
+    tick_in(&mut store, &mut github, Mode::Act);
+    let all = events(&store);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(
+        all[0].payload["refusal"],
+        serde_json::json!({ "reason": "not_reached" })
+    );
+    assert!(all[0].payload.get("world").is_none());
+}
+
+#[test]
+fn github_down_on_one_repo_fails_only_that_repo() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    github.label(REF, 2, LABEL);
+    github.label("lumen", 2, LABEL);
+    github.fail("lumen", true);
+    let report = tick_in(&mut store, &mut github, Mode::Act);
+    assert_eq!(report.failed, 1);
+    assert_eq!(store.loops().unwrap().len(), 1);
+    github.fail("lumen", false);
+    tick_in(&mut store, &mut github, Mode::Act);
+    assert_eq!(store.loops().unwrap().len(), 2);
+
+    // A request whose world cannot be read fails at its boundary, stays
+    // pending, and opens on the tick after GitHub is back.
+    ask(&mut store, "lumen", 9);
+    github.fail("lumen", true);
+    let report = tick_in(&mut store, &mut github, Mode::Act);
+    let line = report.lines.iter().find(|l| l.issue == 9).unwrap();
+    assert!(matches!(&line.outcome, Outcome::Failed(m) if m.contains("observing GitHub")));
+    assert_eq!(store.snapshot().unwrap().requests.len(), 1);
+    github.fail("lumen", false);
+    tick_in(&mut store, &mut github, Mode::Act);
+    assert_eq!(store.loops().unwrap().len(), 3);
+}
+
+#[test]
+fn observe_sees_a_new_label_and_records_nothing() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    github.label(REF, 6, LABEL);
+    github.label("libraw", 6, LABEL);
+    let before = store.clone();
+    let observed = tick_in(&mut store, &mut github, Mode::Observe);
+    assert_eq!(store, before, "observe wrote to the store");
+    let acted = tick_in(&mut store, &mut github, Mode::Act);
+    let decisions = |r: &Report| {
+        r.lines
+            .iter()
+            .map(|l| (l.repo.clone(), l.issue, l.decision))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(decisions(&observed), decisions(&acted));
+    assert_eq!(observed.polls, acted.polls);
+    assert_eq!(
+        acted
+            .lines
+            .iter()
+            .map(|l| l.decision.map(|d| d.action))
+            .collect::<Vec<_>>(),
+        [
+            Some(Action::Refuse {
+                refusal: Refusal::NoLockfile {}
+            }),
+            Some(Action::OpenLoop {}),
+        ]
+    );
+}
+
+/// The criterion that no installation token reaches an event, a log line or
+/// a file. The fake has no token, so this pins the boundary's shape: the
+/// tick's ports carry no token type, events are built from the observation,
+/// and the one place a token meets disk, the clone, is tested in `git.rs`.
+#[test]
+fn no_event_payload_carries_anything_token_shaped() {
+    let mut github = world();
+    let mut store = MemoryStore::new();
+    for (repo, issue) in [(REF, 1), (REF, 13), ("libraw", 1), ("lumen", 2)] {
+        github.label(repo, issue, LABEL);
+    }
+    ask(&mut store, "gauge", 3);
+    tick_in(&mut store, &mut github, Mode::Act);
+    tick_in(&mut store, &mut github, Mode::Act);
+    for event in events(&store) {
+        let text = event.payload.to_string();
+        for shape in [
+            "ghs_",
+            "ghp_",
+            "gho_",
+            "github_pat_",
+            "Bearer",
+            "x-access-token",
+            "BEGIN",
+        ] {
+            assert!(!text.contains(shape), "{shape} in {text}");
+        }
+    }
 }
