@@ -42,6 +42,6 @@ Gauge.
 
 ## Criteria
 
-- [ ] `~/.local/state/gauge/` exists with mode 700 and is outside every
+- [x] `~/.local/state/gauge/` exists with mode 700 and is outside every
       checkout.
-- [ ] Nothing in agent-box or agent-host mounts it or a parent of it.
+- [x] Nothing in agent-box or agent-host mounts it or a parent of it.
